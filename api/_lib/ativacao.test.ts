@@ -1,9 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fetchMock = vi.fn();
 vi.stubGlobal("fetch", fetchMock);
 
-const { decidirAcao, dentroDaJanela } = await import("./ativacao");
+// Mocka o módulo inteiro, no mesmo padrão de processar.test.ts: reconstrói
+// chamada por chamada os encadeamentos reais do Supabase, para que um erro de
+// encadeamento no código de produção quebre o teste em vez de passar calado.
+vi.mock("./supabase", () => ({ getSupabase: vi.fn() }));
+
+import { getSupabase } from "./supabase";
+const { decidirAcao, dentroDaJanela, ativarLead } = await import("./ativacao");
 
 const DIA = { horarioInicio: "08:00", horarioFim: "20:00" };
 const base = { modo: "real" as const, suprimir: false, motivo: null, ...DIA };
@@ -90,5 +96,198 @@ describe("decidirAcao", () => {
 
   it("trata modo desconhecido como dry_run, nunca como real", () => {
     expect(decidirAcao({ ...base, modo: "qualquer-coisa" as never })).toBe("dry_run");
+  });
+});
+
+const LEAD_BASE = {
+  id: 1,
+  cliente_slug: "malentachi",
+  telefone_e164: "5515991280217",
+  nome: "Fulano da Silva",
+  veiculo_texto: "Civic 2020",
+  portal: "webmotors",
+};
+
+const CFG_BASE = {
+  cliente_slug: "malentachi",
+  texto_boas_vindas: "Oi {nome}, tudo bem? Vi seu interesse no {veiculo}.",
+  wts_from: "",
+  janela_supressao_dias: 30,
+  horario_inicio: "08:00:00",
+  horario_fim: "20:00:00",
+  modo_envio: "dry_run",
+  kill_switch: false,
+};
+
+interface EstadoAtivacao {
+  lead?: Record<string, unknown> | null;
+  cfg?: Record<string, unknown>;
+  anteriores?: { enviado_em: string | null }[];
+  insertAtivacaoResultado?: { data: { id: number }[] | null; error: unknown };
+}
+
+/**
+ * Reconstrói, chamada por chamada, os encadeamentos reais que ativarLead faz
+ * no Supabase — não um proxy genérico — para que um erro de encadeamento no
+ * código de produção quebre o teste em vez de passar calado. Mesmo padrão de
+ * processar.test.ts.
+ */
+function construirFrom(estado: EstadoAtivacao) {
+  const chamadasInsertAtivacao: Record<string, unknown>[] = [];
+  const chamadasUpdateAtivacao: Record<string, unknown>[] = [];
+  const chamadasUpdateLead: Record<string, unknown>[] = [];
+
+  const lead = estado.lead ?? LEAD_BASE;
+  const cfg = estado.cfg ?? CFG_BASE;
+  const insertAtivacaoResultado = estado.insertAtivacaoResultado ?? { data: [{ id: 501 }], error: null };
+
+  const from = vi.fn((tabela: string) => {
+    if (tabela === "portais_leads") {
+      return {
+        select: vi.fn((cols: string) => {
+          if (cols === "*") {
+            return {
+              eq: vi.fn(() => ({
+                single: vi.fn(async () => ({
+                  data: lead,
+                  error: lead ? null : { message: "lead nao encontrado" },
+                })),
+              })),
+            };
+          }
+          // cols === "enviado_em": busca do último contato com este telefone.
+          return {
+            eq: vi.fn(() => ({
+              eq: vi.fn(() => ({
+                not: vi.fn(() => ({
+                  order: vi.fn(() => ({
+                    limit: vi.fn(async () => ({ data: estado.anteriores ?? [], error: null })),
+                  })),
+                })),
+              })),
+            })),
+          };
+        }),
+        update: vi.fn((payload: Record<string, unknown>) => {
+          chamadasUpdateLead.push(payload);
+          return { eq: vi.fn(async () => ({ data: [{ id: 1 }], error: null })) };
+        }),
+      };
+    }
+    if (tabela === "portais_config") {
+      return {
+        select: vi.fn(() => ({
+          eq: vi.fn(() => ({
+            single: vi.fn(async () => ({ data: cfg, error: null })),
+          })),
+        })),
+      };
+    }
+    if (tabela === "portais_ativacoes") {
+      return {
+        insert: vi.fn((payload: Record<string, unknown>) => {
+          chamadasInsertAtivacao.push(payload);
+          return { select: vi.fn(async () => insertAtivacaoResultado) };
+        }),
+        update: vi.fn((payload: Record<string, unknown>) => {
+          chamadasUpdateAtivacao.push(payload);
+          return { eq: vi.fn(async () => ({ data: [{ id: 501 }], error: null })) };
+        }),
+      };
+    }
+    throw new Error(`tabela inesperada no mock: ${tabela}`);
+  });
+
+  return { from, chamadasInsertAtivacao, chamadasUpdateAtivacao, chamadasUpdateLead };
+}
+
+function mockarSupabase(estado: EstadoAtivacao = {}) {
+  const construido = construirFrom(estado);
+  vi.mocked(getSupabase).mockReturnValue({ from: construido.from } as never);
+  return construido;
+}
+
+describe("ativarLead", () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.mocked(getSupabase).mockReset();
+    process.env.WTS_TOKEN = "token-de-teste";
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    delete process.env.WTS_TOKEN;
+  });
+
+  // O teste mais importante do sistema: em dry_run, a rede nunca é tocada.
+  it("modo dry_run: fetch NUNCA é chamado", async () => {
+    mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "dry_run" } });
+
+    const acao = await ativarLead(1);
+
+    expect(acao).toBe("dry_run");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("modo dry_run: grava a linha em portais_ativacoes mesmo assim, com payload_enviado preenchido", async () => {
+    const { chamadasInsertAtivacao } = mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "dry_run" } });
+
+    await ativarLead(1);
+
+    expect(chamadasInsertAtivacao).toHaveLength(1);
+    expect(chamadasInsertAtivacao[0].modo).toBe("dry_run");
+    const payload = chamadasInsertAtivacao[0].payload_enviado as { body: { text: string } } | null;
+    expect(payload).toBeTruthy();
+    expect(payload?.body.text).toContain("Fulano");
+  });
+
+  it("lead suprimido: fetch não é chamado, e motivo_supressao é gravado no lead", async () => {
+    const { chamadasUpdateLead } = mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "real", kill_switch: true } });
+
+    const acao = await ativarLead(1);
+
+    expect(acao).toBe("suprimido");
+    expect(fetchMock).not.toHaveBeenCalled();
+    const chamada = chamadasUpdateLead.find((c) => c.status_ativacao === "suprimido");
+    expect(chamada).toBeDefined();
+    expect(chamada?.motivo_supressao).toBe("kill-switch ligado");
+  });
+
+  it("modo real fora da janela de horário: fetch não é chamado (decisão adiar)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T03:00:00-03:00")); // 3h da manhã, fora de 08h-20h
+    mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "real" } });
+
+    const acao = await ativarLead(1);
+
+    expect(acao).toBe("adiar");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("modo real, sem supressão, dentro da janela: fetch É chamado e o lead vai para status enviado", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00")); // dentro de 08h-20h
+    fetchMock.mockResolvedValue({ ok: true, text: async () => JSON.stringify({ id: "msg-1" }) });
+    const { chamadasUpdateLead } = mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "real" } });
+
+    const acao = await ativarLead(1);
+
+    expect(acao).toBe("enviar");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const chamada = chamadasUpdateLead.find((c) => c.status_ativacao === "enviado");
+    expect(chamada).toBeDefined();
+  });
+
+  // PostgREST devolve 200 com lista vazia quando o insert não gravou. Sem
+  // conferir a linha de volta, a ausência de auditoria passaria em silêncio —
+  // exatamente o oposto do propósito desta tabela.
+  it("insert em portais_ativacoes que não devolve linha faz a função estourar", async () => {
+    mockarSupabase({
+      cfg: { ...CFG_BASE, modo_envio: "dry_run" },
+      insertAtivacaoResultado: { data: [], error: null },
+    });
+
+    await expect(ativarLead(1)).rejects.toThrow();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
