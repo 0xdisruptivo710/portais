@@ -13,7 +13,7 @@ const contaId = Number(process.env.PORTAIS_CONTA_ID ?? 1);
 
 const desde = new Date(Date.now() - dias * 24 * 60 * 60 * 1000);
 const contagem: Partial<Record<Portal, number>> = {};
-const resumo = { gravado: 0, duplicado: 0, ignorado: 0, lidos: 0 };
+const resumo = { gravado: 0, duplicado: 0, ignorado: 0, lidos: 0, semFonte: 0 };
 
 const usuario = process.env.GMAIL_IMAP_USER;
 const senha = process.env.GMAIL_IMAP_APP_PASSWORD;
@@ -33,7 +33,13 @@ try {
 
     // O tipo do imapflow marca `source` como opcional mesmo quando pedimos
     // source:true na query; sem essa guarda o simpleParser recebe undefined.
-    if (!msg.source) continue;
+    // Perder um e-mail aqui tem que deixar rastro: sem o contador e o warn,
+    // o lead some da varredura sem nenhuma linha no resumo final.
+    if (!msg.source) {
+      resumo.semFonte++;
+      console.warn(`uid ${msg.uid}: sem source, mensagem pulada`);
+      continue;
+    }
 
     const email = paraEmailCru(await simpleParser(msg.source));
     const portal = identificarPortal(email.remetente);
@@ -57,5 +63,10 @@ try {
   await client.logout();
 }
 
-console.log("\nlidos:", resumo.lidos, "| gravados:", resumo.gravado, "| duplicados:", resumo.duplicado);
+console.log(
+  "\nlidos:", resumo.lidos,
+  "| gravados:", resumo.gravado,
+  "| duplicados:", resumo.duplicado,
+  "| sem fonte:", resumo.semFonte,
+);
 console.log("por portal:", contagem);
