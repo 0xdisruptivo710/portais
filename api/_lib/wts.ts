@@ -74,11 +74,17 @@ export async function buscarContatoPorTelefone(e164: string): Promise<{ id: stri
 }
 
 export async function criarCard(args: {
+  panelId: string;
   stepId: string;
   title: string;
   contactId: string;
 }): Promise<{ id: string; contactIds: string[] }> {
-  const corpo = { stepId: args.stepId, title: args.title, contactIds: [args.contactId] };
+  const corpo = {
+    panelId: args.panelId,
+    stepId: args.stepId,
+    title: args.title,
+    contactIds: [args.contactId],
+  };
 
   const resposta = (await wtsRequest("POST", "/crm/v1/panel/card", corpo, "application/json")) as {
     id: string;

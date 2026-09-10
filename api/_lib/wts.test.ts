@@ -145,11 +145,16 @@ describe("criarCard", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const r = await criarCard({ stepId: "step1", title: "Fulano", contactId: "c1" });
+    const r = await criarCard({ panelId: "panel1", stepId: "step1", title: "Fulano", contactId: "c1" });
 
     expect(r).toEqual({ id: "card1", contactIds: ["c1"] });
     const [, init] = fetchMock.mock.calls[0];
-    expect(JSON.parse(init.body)).toEqual({ stepId: "step1", title: "Fulano", contactIds: ["c1"] });
+    expect(JSON.parse(init.body)).toEqual({
+      panelId: "panel1",
+      stepId: "step1",
+      title: "Fulano",
+      contactIds: ["c1"],
+    });
     expect(init.headers["content-type"]).toBe("application/json");
   });
 
@@ -163,7 +168,9 @@ describe("criarCard", () => {
       }),
     );
 
-    await expect(criarCard({ stepId: "step1", title: "Fulano", contactId: "c1" })).rejects.toThrow();
+    await expect(
+      criarCard({ panelId: "panel1", stepId: "step1", title: "Fulano", contactId: "c1" }),
+    ).rejects.toThrow();
   });
 
   it("estoura sem title, refletindo o 500 que a API devolve nesse caso", async () => {
@@ -172,6 +179,8 @@ describe("criarCard", () => {
       vi.fn().mockResolvedValue({ ok: false, status: 500, text: vi.fn().mockResolvedValue("title obrigatorio") }),
     );
 
-    await expect(criarCard({ stepId: "step1", title: "", contactId: "c1" })).rejects.toThrow(/500/);
+    await expect(
+      criarCard({ panelId: "panel1", stepId: "step1", title: "", contactId: "c1" }),
+    ).rejects.toThrow(/500/);
   });
 });
