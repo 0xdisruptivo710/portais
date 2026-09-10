@@ -48,10 +48,13 @@ export default async function handler(request: Request): Promise<Response> {
 
   const sb = getSupabase();
 
+  // `ativo` é o botão de pausa da conta: sem este filtro, pausar não pausava
+  // nada e a caixa continuava sendo lida a cada 5 minutos.
   const { data: conta, error: erroConta } = await sb
     .from("portais_contas")
     .select("*")
     .eq("id", CONTA_ID)
+    .eq("ativo", true)
     .single();
   if (erroConta || !conta) return erro(erroConta?.message ?? "conta nao encontrada", 500);
 

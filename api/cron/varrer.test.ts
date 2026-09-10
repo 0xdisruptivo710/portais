@@ -69,19 +69,26 @@ function construirClienteImapFake(estado: EstadoTeste) {
 
 function mockarTudo(estado: EstadoTeste = {}) {
   const chamadasUpdateConta: Record<string, unknown>[] = [];
+  const filtrosConta: [string, unknown][] = [];
   const updateContaResultado = estado.updateContaResultado ?? { data: [{ id: 1 }], error: null };
 
   const from = vi.fn((tabela: string) => {
     if (tabela === "portais_contas") {
-      return {
-        select: vi.fn(() => ({
-          eq: vi.fn(() => ({
-            single: vi.fn(async () => ({
-              data: estado.conta ?? CONTA_BASE,
-              error: estado.erroConta ?? null,
-            })),
-          })),
+      // O eq devolve a si mesmo pra aceitar qualquer numero de filtros
+      // encadeados, e registra cada um: e' assim que o teste do filtro por
+      // conta ativa consegue enxergar o .eq("ativo", true).
+      const consulta = {
+        eq: vi.fn((coluna: string, valor: unknown) => {
+          filtrosConta.push([coluna, valor]);
+          return consulta;
+        }),
+        single: vi.fn(async () => ({
+          data: estado.conta ?? CONTA_BASE,
+          error: estado.erroConta ?? null,
         })),
+      };
+      return {
+        select: vi.fn(() => consulta),
         update: vi.fn((payload: Record<string, unknown>) => {
           chamadasUpdateConta.push(payload);
           return { eq: vi.fn(() => ({ select: vi.fn(async () => updateContaResultado) })) };
@@ -134,7 +141,7 @@ function mockarTudo(estado: EstadoTeste = {}) {
   }
   vi.mocked(ativarPendentes).mockResolvedValue(estado.resumoAtivar ?? { processado: 0, falha: 0 });
 
-  return { chamadasUpdateConta, lockRelease, logout, fetchChamadas };
+  return { chamadasUpdateConta, filtrosConta, lockRelease, logout, fetchChamadas };
 }
 
 function mensagem(chave: string, uid: number): MensagemFake {
@@ -355,6 +362,14 @@ describe("GET /api/cron/varrer", () => {
     expect(vi.mocked(interpretarPendentes)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(ativarPendentes)).toHaveBeenCalledTimes(1);
     expect(chamadasUpdateConta.at(-1)).toEqual({ ultimo_uid: 100, ultimo_erro: null });
+  });
+
+  it("so varre conta ativa: conta pausada nao pode continuar sendo lida", async () => {
+    const { filtrosConta } = mockarTudo({ conta: CONTA_BASE, mensagens: [] });
+
+    await handler(comSegredo());
+
+    expect(filtrosConta).toContainEqual(["ativo", true]);
   });
 
   it("sempre desconecta do IMAP ao final, mesmo quando a varredura falha", async () => {

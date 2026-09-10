@@ -19,7 +19,7 @@ const contaId = Number(process.env.PORTAIS_CONTA_ID ?? 1);
 
 const desde = new Date(Date.now() - dias * 24 * 60 * 60 * 1000);
 const contagem: Partial<Record<Portal, number>> = {};
-const resumo = { gravado: 0, duplicado: 0, ignorado: 0, lidos: 0, semFonte: 0 };
+const resumo = { gravado: 0, duplicado: 0, ignorado: 0, lidos: 0, semFonte: 0, falha: 0 };
 
 const usuario = process.env.GMAIL_IMAP_USER;
 const senha = process.env.GMAIL_IMAP_APP_PASSWORD;
@@ -47,19 +47,28 @@ try {
       continue;
     }
 
-    const email = paraEmailCru(await simpleParser(msg.source));
-    const portal = identificarPortal(email.remetente);
+    try {
+      const email = paraEmailCru(await simpleParser(msg.source));
+      const portal = identificarPortal(email.remetente);
 
-    const r = await ingerir(email, contaId);
-    resumo[r]++;
+      const r = await ingerir(email, contaId);
+      resumo[r]++;
 
-    if (portal) {
-      contagem[portal] = (contagem[portal] ?? 0) + 1;
-      if (salvarFixtures && (contagem[portal] ?? 0) <= 10) {
-        const dir = join("api/_lib/parsers/fixtures", portal);
-        mkdirSync(dir, { recursive: true });
-        writeFileSync(join(dir, `${String(contagem[portal]).padStart(2, "0")}.eml`), msg.source);
+      if (portal) {
+        contagem[portal] = (contagem[portal] ?? 0) + 1;
+        if (salvarFixtures && (contagem[portal] ?? 0) <= 10) {
+          const dir = join("api/_lib/parsers/fixtures", portal);
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(join(dir, `${String(contagem[portal]).padStart(2, "0")}.eml`), msg.source);
+        }
       }
+    } catch (e) {
+      // Mesma disciplina do cron: uma mensagem que estoura no simpleParser
+      // nao pode abortar a varredura. Esta roda uma vez so, sobre 90 dias de
+      // caixa real, e e' ela que produz o acervo de fixtures -- perder tudo
+      // por causa de um e-mail malformado sairia caro.
+      resumo.falha++;
+      console.error(`uid ${msg.uid}: falhou ao ingerir`, e);
     }
 
     if (resumo.lidos % 200 === 0) console.log(`  ...${resumo.lidos} lidos`);
@@ -74,6 +83,7 @@ console.log(
   "| gravados:", resumo.gravado,
   "| duplicados:", resumo.duplicado,
   "| sem fonte:", resumo.semFonte,
+  "| falharam:", resumo.falha,
 );
 console.log("por portal:", contagem);
 

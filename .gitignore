@@ -4,3 +4,7 @@ node_modules
 dist
 .vercel
 *.tsbuildinfo
+
+# E-mail real da caixa da cliente (nome, telefone, mensagem). Anonimizar
+# antes de versionar -- ver api/_lib/parsers/fixtures/README.md
+api/_lib/parsers/fixtures/**/*.eml
