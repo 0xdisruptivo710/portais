@@ -16,6 +16,13 @@ import { simpleParser } from "mailparser";
 
 const { default: handler } = await import("./varrer");
 
+const SEGREDO_CRON = "segredo-do-cron-de-teste";
+
+/** O cron so responde com o segredo proprio no Authorization (ver sessao.ts). */
+function comSegredo(segredo = SEGREDO_CRON): Request {
+  return new Request("https://x/api/cron/varrer", { headers: { authorization: `Bearer ${segredo}` } });
+}
+
 const CONTA_BASE = { id: 1, cliente_slug: "malentachi", ultimo_uid: 100, ultimo_erro: null, ativo: true };
 
 interface MensagemFake {
@@ -145,12 +152,14 @@ beforeEach(() => {
   vi.mocked(simpleParser).mockReset();
   process.env.GMAIL_IMAP_USER = "conta@gmail.com";
   process.env.GMAIL_IMAP_APP_PASSWORD = "app-password-de-teste";
+  process.env.CRON_SECRET = SEGREDO_CRON;
 });
 
 afterEach(() => {
   vi.useRealTimers();
   delete process.env.GMAIL_IMAP_USER;
   delete process.env.GMAIL_IMAP_APP_PASSWORD;
+  delete process.env.CRON_SECRET;
 });
 
 describe("GET /api/cron/varrer", () => {
@@ -162,7 +171,7 @@ describe("GET /api/cron/varrer", () => {
       resumoAtivar: { processado: 2, falha: 0 },
     });
 
-    const r = await handler(new Request("https://x/api/cron/varrer"));
+    const r = await handler(comSegredo());
     expect(r.status).toBe(200);
     const corpo = await r.json();
 
@@ -191,7 +200,7 @@ describe("GET /api/cron/varrer", () => {
       resumoInterpretar: { processado: 2, falha: 0 },
     });
 
-    const r = await handler(new Request("https://x/api/cron/varrer"));
+    const r = await handler(comSegredo());
     expect(r.status).toBe(200);
     const corpo = await r.json();
 
@@ -213,7 +222,7 @@ describe("GET /api/cron/varrer", () => {
       resumoAtivar: { processado: 1, falha: 2 },
     });
 
-    const r = await handler(new Request("https://x/api/cron/varrer"));
+    const r = await handler(comSegredo());
     expect(r.status).toBe(200);
     const corpo = await r.json();
 
@@ -231,7 +240,7 @@ describe("GET /api/cron/varrer", () => {
       erroInterpretar: new Error("fila fora do ar"),
     });
 
-    const r = await handler(new Request("https://x/api/cron/varrer"));
+    const r = await handler(comSegredo());
 
     expect(r.status).toBe(500);
     expect(chamadasUpdateConta.at(-1)).toEqual({ ultimo_erro: "fila fora do ar" });
@@ -247,7 +256,7 @@ describe("GET /api/cron/varrer", () => {
       mensagens,
     });
 
-    const r = await handler(new Request("https://x/api/cron/varrer"));
+    const r = await handler(comSegredo());
     const corpo = await r.json();
 
     expect(corpo.lidos).toBe(200);
@@ -261,7 +270,7 @@ describe("GET /api/cron/varrer", () => {
       mensagens: [{ uid: 1, chave: "sem-fonte" }, mensagem("m2", 2)],
     });
 
-    const r = await handler(new Request("https://x/api/cron/varrer"));
+    const r = await handler(comSegredo());
     const corpo = await r.json();
 
     expect(corpo.semFonte).toBe(1);
@@ -274,7 +283,7 @@ describe("GET /api/cron/varrer", () => {
       erroAbrirCaixa: new Error("Invalid credentials"),
     });
 
-    const r = await handler(new Request("https://x/api/cron/varrer"));
+    const r = await handler(comSegredo());
 
     expect(r.status).toBe(500);
     const corpo = await r.json();
@@ -291,7 +300,7 @@ describe("GET /api/cron/varrer", () => {
       erroFetch: new Error("Connection closed"),
     });
 
-    const r = await handler(new Request("https://x/api/cron/varrer"));
+    const r = await handler(comSegredo());
 
     expect(r.status).toBe(500);
     expect(chamadasUpdateConta).toEqual([{ ultimo_erro: "Connection closed" }]);
@@ -305,7 +314,7 @@ describe("GET /api/cron/varrer", () => {
 
     const { chamadasUpdateConta } = mockarTudo({ conta: CONTA_BASE });
 
-    const r = await handler(new Request("https://x/api/cron/varrer"));
+    const r = await handler(comSegredo());
 
     expect(r.status).toBe(500);
     expect(vi.mocked(abrirCaixa)).not.toHaveBeenCalled();
@@ -318,7 +327,7 @@ describe("GET /api/cron/varrer", () => {
   it("conta nao encontrada: 500, sem tentar abrir o IMAP", async () => {
     mockarTudo({ conta: null, erroConta: { message: "not found" } });
 
-    const r = await handler(new Request("https://x/api/cron/varrer"));
+    const r = await handler(comSegredo());
 
     expect(r.status).toBe(500);
     expect(vi.mocked(abrirCaixa)).not.toHaveBeenCalled();
@@ -335,7 +344,7 @@ describe("GET /api/cron/varrer", () => {
       resumoAtivar: { processado: 3, falha: 0 },
     });
 
-    const r = await handler(new Request("https://x/api/cron/varrer"));
+    const r = await handler(comSegredo());
     expect(r.status).toBe(200);
     const corpo = await r.json();
 
@@ -354,8 +363,39 @@ describe("GET /api/cron/varrer", () => {
       erroFetch: new Error("Connection closed"),
     });
 
-    await handler(new Request("https://x/api/cron/varrer"));
+    await handler(comSegredo());
 
     expect(logout).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("guarda do cron", () => {
+  it("recusa segredo errado com 401, sem abrir o IMAP nem tocar no banco", async () => {
+    const { chamadasUpdateConta } = mockarTudo({ conta: CONTA_BASE });
+
+    const r = await handler(comSegredo("segredo-errado"));
+
+    expect(r.status).toBe(401);
+    expect(vi.mocked(abrirCaixa)).not.toHaveBeenCalled();
+    expect(chamadasUpdateConta).toHaveLength(0);
+  });
+
+  it("recusa quem chama sem Authorization nenhum", async () => {
+    mockarTudo({ conta: CONTA_BASE });
+
+    const r = await handler(new Request("https://x/api/cron/varrer"));
+
+    expect(r.status).toBe(401);
+    expect(vi.mocked(abrirCaixa)).not.toHaveBeenCalled();
+  });
+
+  it("sem CRON_SECRET no ambiente, recusa em vez de liberar a varredura", async () => {
+    delete process.env.CRON_SECRET;
+    mockarTudo({ conta: CONTA_BASE });
+
+    const r = await handler(comSegredo());
+
+    expect(r.status).toBe(500);
+    expect(vi.mocked(abrirCaixa)).not.toHaveBeenCalled();
   });
 });

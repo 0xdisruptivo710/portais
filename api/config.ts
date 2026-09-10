@@ -1,4 +1,5 @@
 import { erro, json } from "./_lib/http.js";
+import { exigirAdmin } from "./_lib/sessao.js";
 import { getSupabase } from "./_lib/supabase.js";
 
 // Único cliente ativo por enquanto (mesmo hardcode de processar.ts). Quando
@@ -45,6 +46,11 @@ function campoPreenchido(v: unknown): boolean {
  * kill-switch por engano se não fosse recusado aqui.
  */
 export default async function handler(request: Request): Promise<Response> {
+  // Painel é interno: sem sessão, nada é lido nem gravado. Os GET daqui
+  // devolvem nome, telefone, e-mail e a mensagem escrita pelo lead.
+  const barrado = exigirAdmin(request);
+  if (barrado) return barrado;
+
   if (request.method === "GET") return buscar();
   if (request.method === "PUT") return atualizar(request);
   return erro("metodo nao permitido", 405);

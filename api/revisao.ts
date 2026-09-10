@@ -1,4 +1,5 @@
 import { erro, json } from "./_lib/http.js";
+import { exigirAdmin } from "./_lib/sessao.js";
 import { getSupabase } from "./_lib/supabase.js";
 import { paraE164, paraExibicao } from "./_lib/telefone.js";
 
@@ -10,6 +11,11 @@ import { paraE164, paraExibicao } from "./_lib/telefone.js";
  * quando a interpretação automática falha.
  */
 export default async function handler(request: Request): Promise<Response> {
+  // Painel é interno: sem sessão, nada é lido nem gravado. Os GET daqui
+  // devolvem nome, telefone, e-mail e a mensagem escrita pelo lead.
+  const barrado = exigirAdmin(request);
+  if (barrado) return barrado;
+
   if (request.method === "GET") return listar();
   if (request.method === "POST") return completar(request);
   return erro("metodo nao permitido", 405);

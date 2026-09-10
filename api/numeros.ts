@@ -1,5 +1,6 @@
 import { PORTAIS } from "../src/tipos.js";
 import { erro, json } from "./_lib/http.js";
+import { exigirAdmin } from "./_lib/sessao.js";
 import { getSupabase } from "./_lib/supabase.js";
 
 const DIAS_PADRAO = 30;
@@ -25,6 +26,11 @@ interface NumerosPortal {
  * justifica RPC nem uma segunda consulta filtrada por data.
  */
 export default async function handler(request: Request): Promise<Response> {
+  // Painel é interno: sem sessão, nada é lido nem gravado. Os GET daqui
+  // devolvem nome, telefone, e-mail e a mensagem escrita pelo lead.
+  const barrado = exigirAdmin(request);
+  if (barrado) return barrado;
+
   const url = new URL(request.url);
   const dias = Math.max(1, Number(url.searchParams.get("dias") ?? String(DIAS_PADRAO)) || DIAS_PADRAO);
   const desde = Date.now() - dias * 24 * 60 * 60 * 1000;

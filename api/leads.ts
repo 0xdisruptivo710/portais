@@ -1,5 +1,6 @@
 import { PORTAIS, type Portal } from "../src/tipos.js";
 import { erro, json } from "./_lib/http.js";
+import { exigirAdmin } from "./_lib/sessao.js";
 import { getSupabase } from "./_lib/supabase.js";
 
 const LIMITE_PADRAO = 50;
@@ -11,6 +12,11 @@ const LIMITE_PADRAO = 50;
  * lista vazia (portal inexistente) em vez do 400 que avisa quem chamou.
  */
 export default async function handler(request: Request): Promise<Response> {
+  // Painel é interno: sem sessão, nada é lido nem gravado. Os GET daqui
+  // devolvem nome, telefone, e-mail e a mensagem escrita pelo lead.
+  const barrado = exigirAdmin(request);
+  if (barrado) return barrado;
+
   const url = new URL(request.url);
   const portal = url.searchParams.get("portal");
   if (portal !== null && !PORTAIS.includes(portal as Portal)) {

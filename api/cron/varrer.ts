@@ -1,5 +1,6 @@
 import { simpleParser } from "mailparser";
 import { erro, json } from "../_lib/http.js";
+import { exigirCron } from "../_lib/sessao.js";
 import { getSupabase } from "../_lib/supabase.js";
 import { abrirCaixa, caixaDeTodosOsEmails } from "../_lib/imap.js";
 import { paraEmailCru } from "../_lib/email.js";
@@ -38,7 +39,13 @@ type ClienteSupabase = ReturnType<typeof getSupabase>;
  * conexão — e por isso grava `ultimo_erro` na conta e responde 500 em vez de
  * um 200 vazio.
  */
-export default async function handler(_request: Request): Promise<Response> {
+export default async function handler(request: Request): Promise<Response> {
+  // Quem chama é a Vercel, não um humano: segredo próprio, conferido antes
+  // de abrir conexão com banco ou IMAP. Sem isso, a URL do cron dispara a
+  // leitura da caixa de e-mail da cliente para qualquer um.
+  const barrado = exigirCron(request);
+  if (barrado) return barrado;
+
   const sb = getSupabase();
 
   const { data: conta, error: erroConta } = await sb

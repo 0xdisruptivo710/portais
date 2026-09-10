@@ -3,7 +3,29 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./_lib/supabase", () => ({ getSupabase: vi.fn() }));
 import { getSupabase } from "./_lib/supabase";
 
+import { assinarSessao, COOKIE_ADMIN } from "./_lib/sessao";
+
 const { default: handler } = await import("./revisao");
+
+const SEGREDO_SESSAO = "segredo-de-teste-bem-longo-mesmo";
+
+beforeEach(() => {
+  process.env.ADMIN_SESSION_SECRET = SEGREDO_SESSAO;
+});
+
+/**
+ * Toda rota do painel passa pela guarda de sessao: os testes de
+ * comportamento mandam um cookie valido, e o teste de porta trancada (no fim
+ * do arquivo) manda um Request cru, sem cookie nenhum.
+ */
+function comSessao(url: string, init: RequestInit = {}): Request {
+  const cookie = `${COOKIE_ADMIN}=${assinarSessao(Date.now() + 60_000, SEGREDO_SESSAO)}`;
+  return new Request(url, {
+    ...init,
+    headers: { ...((init.headers ?? {}) as Record<string, string>), cookie },
+  });
+}
+
 
 interface EstadoFrom {
   eventosRevisao?: Record<string, unknown>[];
@@ -83,7 +105,7 @@ describe("GET /api/revisao", () => {
   it("lista os eventos com status revisao", async () => {
     mockarSupabase({ eventosRevisao: [{ id: 9, portal: "webmotors" }] });
 
-    const r = await handler(new Request("https://x/api/revisao"));
+    const r = await handler(comSessao("https://x/api/revisao"));
 
     expect(r.status).toBe(200);
     const corpo = await r.json();
@@ -93,7 +115,7 @@ describe("GET /api/revisao", () => {
   it("devolve 500 quando o supabase falha, sem mascarar como lista vazia", async () => {
     mockarSupabase({ erroListaEventos: { message: "boom" } });
 
-    const r = await handler(new Request("https://x/api/revisao"));
+    const r = await handler(comSessao("https://x/api/revisao"));
 
     expect(r.status).toBe(500);
   });
@@ -102,7 +124,7 @@ describe("GET /api/revisao", () => {
 describe("POST /api/revisao", () => {
   function postar(corpo: unknown) {
     return handler(
-      new Request("https://x/api/revisao", {
+      comSessao("https://x/api/revisao", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(corpo),
@@ -119,7 +141,7 @@ describe("POST /api/revisao", () => {
   it("recusa json invalido", async () => {
     mockarSupabase();
     const r = await handler(
-      new Request("https://x/api/revisao", { method: "POST", body: "{invalido" }),
+      comSessao("https://x/api/revisao", { method: "POST", body: "{invalido" }),
     );
     expect(r.status).toBe(400);
   });
@@ -159,6 +181,25 @@ describe("POST /api/revisao", () => {
 
     const r = await postar({ evento_id: 9, nome: "Fulano" });
 
+    expect(r.status).toBe(500);
+  });
+});
+
+describe("guarda de sessao de /api/revisao", () => {
+  it("recusa com 401 quem chama sem cookie de sessao", async () => {
+    const r = await handler(new Request("https://x/api/revisao"));
+    expect(r.status).toBe(401);
+  });
+
+  it("recusa com 401 cookie assinado com outro segredo", async () => {
+    const forjado = `${COOKIE_ADMIN}=${assinarSessao(Date.now() + 60_000, "outro-segredo")}`;
+    const r = await handler(new Request("https://x/api/revisao", { headers: { cookie: forjado } }));
+    expect(r.status).toBe(401);
+  });
+
+  it("sem ADMIN_SESSION_SECRET no ambiente, recusa em vez de liberar", async () => {
+    delete process.env.ADMIN_SESSION_SECRET;
+    const r = await handler(comSessao("https://x/api/revisao"));
     expect(r.status).toBe(500);
   });
 });

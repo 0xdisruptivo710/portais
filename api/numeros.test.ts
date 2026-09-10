@@ -3,7 +3,29 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./_lib/supabase", () => ({ getSupabase: vi.fn() }));
 import { getSupabase } from "./_lib/supabase";
 
+import { assinarSessao, COOKIE_ADMIN } from "./_lib/sessao";
+
 const { default: handler } = await import("./numeros");
+
+const SEGREDO_SESSAO = "segredo-de-teste-bem-longo-mesmo";
+
+beforeEach(() => {
+  process.env.ADMIN_SESSION_SECRET = SEGREDO_SESSAO;
+});
+
+/**
+ * Toda rota do painel passa pela guarda de sessao: os testes de
+ * comportamento mandam um cookie valido, e o teste de porta trancada (no fim
+ * do arquivo) manda um Request cru, sem cookie nenhum.
+ */
+function comSessao(url: string, init: RequestInit = {}): Request {
+  const cookie = `${COOKIE_ADMIN}=${assinarSessao(Date.now() + 60_000, SEGREDO_SESSAO)}`;
+  return new Request(url, {
+    ...init,
+    headers: { ...((init.headers ?? {}) as Record<string, string>), cookie },
+  });
+}
+
 
 interface LeadFixture {
   portal: string;
@@ -71,7 +93,7 @@ describe("GET /api/numeros", () => {
       eventosRevisao: [{ portal: "webmotors" }],
     });
 
-    const r = await handler(new Request("https://x/api/numeros"));
+    const r = await handler(comSessao("https://x/api/numeros"));
     expect(r.status).toBe(200);
     const corpo = await r.json();
 
@@ -89,7 +111,7 @@ describe("GET /api/numeros", () => {
   it("portal sem nenhum lead nao quebra a taxa nem o tempo de contato (divisao por zero / NaN)", async () => {
     mockarSupabase({ leads: [], eventosRevisao: [] });
 
-    const r = await handler(new Request("https://x/api/numeros"));
+    const r = await handler(comSessao("https://x/api/numeros"));
     const corpo = await r.json();
 
     const olx = corpo.itens.find((i: { portal: string }) => i.portal === "olx");
@@ -102,7 +124,7 @@ describe("GET /api/numeros", () => {
   it("devolve 500 quando o supabase falha, sem mascarar como lista vazia", async () => {
     mockarSupabase({ erroLeads: { message: "boom" } });
 
-    const r = await handler(new Request("https://x/api/numeros"));
+    const r = await handler(comSessao("https://x/api/numeros"));
     expect(r.status).toBe(500);
   });
 
@@ -118,7 +140,7 @@ describe("GET /api/numeros", () => {
         ],
       });
 
-      const r = await handler(new Request("https://x/api/numeros"));
+      const r = await handler(comSessao("https://x/api/numeros"));
       const corpo = await r.json();
 
       const webmotors = corpo.itens.find((i: { portal: string }) => i.portal === "webmotors");
@@ -134,7 +156,7 @@ describe("GET /api/numeros", () => {
         ],
       });
 
-      const r = await handler(new Request("https://x/api/numeros"));
+      const r = await handler(comSessao("https://x/api/numeros"));
       const corpo = await r.json();
 
       const icarros = corpo.itens.find((i: { portal: string }) => i.portal === "icarros");
@@ -156,7 +178,7 @@ describe("GET /api/numeros", () => {
         ],
       });
 
-      const r = await handler(new Request("https://x/api/numeros"));
+      const r = await handler(comSessao("https://x/api/numeros"));
       const corpo = await r.json();
 
       expect(corpo.serie_diaria).toEqual(
@@ -176,7 +198,7 @@ describe("GET /api/numeros", () => {
       // cair no dia 09, não no 10.
       mockarSupabase({ leads: [lead({ portal: "olx", capturado_em: "2026-09-10T02:30:00.000Z" })] });
 
-      const r = await handler(new Request("https://x/api/numeros"));
+      const r = await handler(comSessao("https://x/api/numeros"));
       const corpo = await r.json();
 
       expect(corpo.serie_diaria).toEqual([{ data: "2026-09-09", portal: "olx", total: 1 }]);
@@ -190,7 +212,7 @@ describe("GET /api/numeros", () => {
         ],
       });
 
-      const r = await handler(new Request("https://x/api/numeros?dias=5"));
+      const r = await handler(comSessao("https://x/api/numeros?dias=5"));
       const corpo = await r.json();
 
       expect(corpo.dias).toBe(5);
@@ -202,11 +224,30 @@ describe("GET /api/numeros", () => {
         leads: [lead({ portal: "webmotors", capturado_em: "2020-01-01T12:00:00.000Z" })],
       });
 
-      const r = await handler(new Request("https://x/api/numeros?dias=5"));
+      const r = await handler(comSessao("https://x/api/numeros?dias=5"));
       expect(r.status).toBe(200);
       const corpo = await r.json();
 
       expect(corpo.serie_diaria).toEqual([]);
     });
+  });
+});
+
+describe("guarda de sessao de /api/numeros", () => {
+  it("recusa com 401 quem chama sem cookie de sessao", async () => {
+    const r = await handler(new Request("https://x/api/numeros"));
+    expect(r.status).toBe(401);
+  });
+
+  it("recusa com 401 cookie assinado com outro segredo", async () => {
+    const forjado = `${COOKIE_ADMIN}=${assinarSessao(Date.now() + 60_000, "outro-segredo")}`;
+    const r = await handler(new Request("https://x/api/numeros", { headers: { cookie: forjado } }));
+    expect(r.status).toBe(401);
+  });
+
+  it("sem ADMIN_SESSION_SECRET no ambiente, recusa em vez de liberar", async () => {
+    delete process.env.ADMIN_SESSION_SECRET;
+    const r = await handler(comSessao("https://x/api/numeros"));
+    expect(r.status).toBe(500);
   });
 });

@@ -204,3 +204,22 @@ form div {
 [role="status"] {
   color: var(--cor-sucesso);
 }
+
+.login {
+  max-width: 320px;
+  margin: 15vh auto;
+  padding: 0 16px;
+}
+
+.login form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.login label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
