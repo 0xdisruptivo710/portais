@@ -4,14 +4,14 @@ vi.mock("../_lib/supabase", () => ({ getSupabase: vi.fn() }));
 vi.mock("../_lib/imap", () => ({ abrirCaixa: vi.fn(), caixaDeTodosOsEmails: vi.fn() }));
 vi.mock("../_lib/email", () => ({ paraEmailCru: vi.fn() }));
 vi.mock("../_lib/ingestao", () => ({ ingerir: vi.fn() }));
-vi.mock("../_lib/processar", () => ({ processarEvento: vi.fn() }));
+vi.mock("../_lib/fila", () => ({ interpretarPendentes: vi.fn(), ativarPendentes: vi.fn() }));
 vi.mock("mailparser", () => ({ simpleParser: vi.fn() }));
 
 import { getSupabase } from "../_lib/supabase";
 import { abrirCaixa, caixaDeTodosOsEmails } from "../_lib/imap";
 import { paraEmailCru } from "../_lib/email";
 import { ingerir } from "../_lib/ingestao";
-import { processarEvento } from "../_lib/processar";
+import { ativarPendentes, interpretarPendentes } from "../_lib/fila";
 import { simpleParser } from "mailparser";
 
 const { default: handler } = await import("./varrer");
@@ -33,9 +33,10 @@ interface EstadoTeste {
   resultadoIngest?: Record<string, "gravado" | "duplicado" | "ignorado">;
   /** chave da mensagem -> lança erro no ingerir/paraEmailCru (simula lead que estoura) */
   falhaIngest?: Set<string>;
-  eventosGravados?: { id: number }[];
-  erroEventosGravados?: { message: string } | null;
-  falhaProcessarIds?: Set<number>;
+  /** O que os drenadores de fila devolvem (o comportamento deles é testado em fila.test.ts). */
+  resumoInterpretar?: { processado: number; falha: number };
+  resumoAtivar?: { processado: number; falha: number };
+  erroInterpretar?: Error;
   updateContaResultado?: { data: unknown; error: unknown };
   erroAbrirCaixa?: Error;
   erroFetch?: Error;
@@ -80,18 +81,6 @@ function mockarTudo(estado: EstadoTeste = {}) {
         }),
       };
     }
-    if (tabela === "portais_eventos_raw") {
-      return {
-        select: vi.fn(() => ({
-          eq: vi.fn(() => ({
-            in: vi.fn(async () => ({
-              data: estado.eventosGravados ?? [],
-              error: estado.erroEventosGravados ?? null,
-            })),
-          })),
-        })),
-      };
-    }
     throw new Error(`tabela inesperada no mock: ${tabela}`);
   });
 
@@ -131,10 +120,12 @@ function mockarTudo(estado: EstadoTeste = {}) {
     if (estado.falhaIngest?.has(chave)) throw new Error(`ingest falhou para ${chave}`);
     return estado.resultadoIngest?.[chave] ?? "gravado";
   });
-  vi.mocked(processarEvento).mockImplementation(async (eventoId: number) => {
-    if (estado.falhaProcessarIds?.has(eventoId)) throw new Error(`processar falhou para evento ${eventoId}`);
-    return "lead";
-  });
+  if (estado.erroInterpretar) {
+    vi.mocked(interpretarPendentes).mockRejectedValue(estado.erroInterpretar);
+  } else {
+    vi.mocked(interpretarPendentes).mockResolvedValue(estado.resumoInterpretar ?? { processado: 0, falha: 0 });
+  }
+  vi.mocked(ativarPendentes).mockResolvedValue(estado.resumoAtivar ?? { processado: 0, falha: 0 });
 
   return { chamadasUpdateConta, lockRelease, logout, fetchChamadas };
 }
@@ -149,7 +140,8 @@ beforeEach(() => {
   vi.mocked(caixaDeTodosOsEmails).mockReset();
   vi.mocked(paraEmailCru).mockReset();
   vi.mocked(ingerir).mockReset();
-  vi.mocked(processarEvento).mockReset();
+  vi.mocked(interpretarPendentes).mockReset();
+  vi.mocked(ativarPendentes).mockReset();
   vi.mocked(simpleParser).mockReset();
   process.env.GMAIL_IMAP_USER = "conta@gmail.com";
   process.env.GMAIL_IMAP_APP_PASSWORD = "app-password-de-teste";
@@ -162,11 +154,12 @@ afterEach(() => {
 });
 
 describe("GET /api/cron/varrer", () => {
-  it("le a partir do ultimo_uid + 1, ingere e processa cada lead novo", async () => {
+  it("le a partir do ultimo_uid + 1, ingere, interpreta a fila e ativa os leads pendentes", async () => {
     const { fetchChamadas, chamadasUpdateConta } = mockarTudo({
       conta: { ...CONTA_BASE, ultimo_uid: 100 },
       mensagens: [mensagem("m1", 101), mensagem("m2", 102)],
-      eventosGravados: [{ id: 11 }, { id: 12 }],
+      resumoInterpretar: { processado: 2, falha: 0 },
+      resumoAtivar: { processado: 2, falha: 0 },
     });
 
     const r = await handler(new Request("https://x/api/cron/varrer"));
@@ -176,10 +169,11 @@ describe("GET /api/cron/varrer", () => {
     expect(corpo.lidos).toBe(2);
     expect(corpo.gravado).toBe(2);
     expect(corpo.processado).toBe(2);
+    expect(corpo.ativado).toBe(2);
     expect(corpo.falha).toBe(0);
     expect(corpo.ultimo_uid).toBe(102);
-    expect(vi.mocked(processarEvento)).toHaveBeenCalledWith(11);
-    expect(vi.mocked(processarEvento)).toHaveBeenCalledWith(12);
+    expect(vi.mocked(interpretarPendentes)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(ativarPendentes)).toHaveBeenCalledTimes(1);
 
     // Range pedido ao IMAP tem que comecar depois do cursor salvo (101:*),
     // nao do zero -- e' isso que faz a varredura ser incremental.
@@ -194,7 +188,7 @@ describe("GET /api/cron/varrer", () => {
       conta: { ...CONTA_BASE, ultimo_uid: 0 },
       mensagens: [mensagem("m1", 1), mensagem("m2", 2), mensagem("m3", 3)],
       falhaIngest: new Set(["m2"]),
-      eventosGravados: [{ id: 1 }, { id: 3 }],
+      resumoInterpretar: { processado: 2, falha: 0 },
     });
 
     const r = await handler(new Request("https://x/api/cron/varrer"));
@@ -211,12 +205,12 @@ describe("GET /api/cron/varrer", () => {
     expect(chamadasUpdateConta.at(-1)).toEqual({ ultimo_uid: 3, ultimo_erro: null });
   });
 
-  it("um lead que estoura no processarEvento nao impede os outros de serem processados", async () => {
+  it("soma no resumo as falhas que os drenadores registraram", async () => {
     mockarTudo({
       conta: { ...CONTA_BASE, ultimo_uid: 0 },
       mensagens: [mensagem("m1", 1), mensagem("m2", 2)],
-      eventosGravados: [{ id: 1 }, { id: 2 }],
-      falhaProcessarIds: new Set([1]),
+      resumoInterpretar: { processado: 1, falha: 1 },
+      resumoAtivar: { processado: 1, falha: 2 },
     });
 
     const r = await handler(new Request("https://x/api/cron/varrer"));
@@ -224,8 +218,26 @@ describe("GET /api/cron/varrer", () => {
     const corpo = await r.json();
 
     expect(corpo.processado).toBe(1);
-    expect(corpo.falha).toBe(1);
-    expect(vi.mocked(processarEvento)).toHaveBeenCalledWith(2);
+    expect(corpo.ativado).toBe(1);
+    // Falha do ingest (0 aqui) + falhas das duas filas: o resumo do cron é o
+    // único lugar onde a execução inteira aparece num número só.
+    expect(corpo.falha).toBe(3);
+  });
+
+  it("falha do drenador grava ultimo_erro e responde 500, sem falhar calado", async () => {
+    const { chamadasUpdateConta } = mockarTudo({
+      conta: { ...CONTA_BASE, ultimo_uid: 0 },
+      mensagens: [mensagem("m1", 1)],
+      erroInterpretar: new Error("fila fora do ar"),
+    });
+
+    const r = await handler(new Request("https://x/api/cron/varrer"));
+
+    expect(r.status).toBe(500);
+    expect(chamadasUpdateConta.at(-1)).toEqual({ ultimo_erro: "fila fora do ar" });
+    // O cursor já foi salvo antes de drenar: uma falha na fila não pode fazer
+    // a próxima execução reler as mesmas mensagens do IMAP.
+    expect(chamadasUpdateConta.some((c) => c.ultimo_uid === 1)).toBe(true);
   });
 
   it("respeita o teto de 200 mensagens por execucao", async () => {
@@ -233,7 +245,6 @@ describe("GET /api/cron/varrer", () => {
     const { chamadasUpdateConta } = mockarTudo({
       conta: { ...CONTA_BASE, ultimo_uid: 0 },
       mensagens,
-      eventosGravados: [],
     });
 
     const r = await handler(new Request("https://x/api/cron/varrer"));
@@ -248,7 +259,6 @@ describe("GET /api/cron/varrer", () => {
     mockarTudo({
       conta: { ...CONTA_BASE, ultimo_uid: 0 },
       mensagens: [{ uid: 1, chave: "sem-fonte" }, mensagem("m2", 2)],
-      eventosGravados: [{ id: 2 }],
     });
 
     const r = await handler(new Request("https://x/api/cron/varrer"));
@@ -314,10 +324,15 @@ describe("GET /api/cron/varrer", () => {
     expect(vi.mocked(abrirCaixa)).not.toHaveBeenCalled();
   });
 
-  it("nenhuma mensagem nova: nao processa nada, e ainda assim grava o cursor (sem mudanca) e responde 200", async () => {
+  it("sem mensagem nova, ainda drena a fila que ja estava no banco", async () => {
+    // O corte que este teste tranca: o cron antigo só interpretava os
+    // message_id que ele mesmo tinha acabado de gravar. Evento pré-existente
+    // com status 'novo' (backfill, reprocessamento) nunca virava lead.
     const { chamadasUpdateConta } = mockarTudo({
       conta: { ...CONTA_BASE, ultimo_uid: 100 },
       mensagens: [],
+      resumoInterpretar: { processado: 3, falha: 0 },
+      resumoAtivar: { processado: 3, falha: 0 },
     });
 
     const r = await handler(new Request("https://x/api/cron/varrer"));
@@ -326,7 +341,10 @@ describe("GET /api/cron/varrer", () => {
 
     expect(corpo.lidos).toBe(0);
     expect(corpo.ultimo_uid).toBe(100);
-    expect(vi.mocked(processarEvento)).not.toHaveBeenCalled();
+    expect(corpo.processado).toBe(3);
+    expect(corpo.ativado).toBe(3);
+    expect(vi.mocked(interpretarPendentes)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(ativarPendentes)).toHaveBeenCalledTimes(1);
     expect(chamadasUpdateConta.at(-1)).toEqual({ ultimo_uid: 100, ultimo_erro: null });
   });
 

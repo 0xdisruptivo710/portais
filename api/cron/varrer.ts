@@ -4,7 +4,7 @@ import { getSupabase } from "../_lib/supabase.js";
 import { abrirCaixa, caixaDeTodosOsEmails } from "../_lib/imap.js";
 import { paraEmailCru } from "../_lib/email.js";
 import { ingerir } from "../_lib/ingestao.js";
-import { processarEvento } from "../_lib/processar.js";
+import { ativarPendentes, interpretarPendentes } from "../_lib/fila.js";
 
 // Única conta ativa por enquanto (mesmo hardcode de CLIENTE_SLUG em
 // config.ts/processar.ts, e o mesmo default de PORTAIS_CONTA_ID em
@@ -20,18 +20,23 @@ const TETO_MENSAGENS = 200;
 type ClienteSupabase = ReturnType<typeof getSupabase>;
 
 /**
- * GET /api/cron/varrer: varredura incremental da caixa via IMAP. Lê só o que
- * tem UID maior que `portais_contas.ultimo_uid`, grava cada e-mail de portal
- * em portais_eventos_raw (`ingerir`) e interpreta os que são novos
- * (`processarEvento`).
+ * GET /api/cron/varrer: varredura incremental da caixa via IMAP, em três
+ * passos. Lê só o que tem UID maior que `portais_contas.ultimo_uid` e grava
+ * cada e-mail de portal em portais_eventos_raw (`ingerir`); depois interpreta
+ * a FILA de eventos crus (`interpretarPendentes`); depois ativa a FILA de
+ * leads pendentes (`ativarPendentes`), que em dry_run só grava a auditoria.
  *
- * Primeiro call site de produção destas duas funções — até aqui só rodavam
- * por teste. Por isso cada mensagem e cada evento são tratados isoladamente
- * (try/catch por item, dentro do loop): uma mensagem malformada ou um lead
- * que estoura no parser/IA não pode impedir os demais e-mails da mesma leva
- * de serem tentados. Falha de autenticação IMAP é a única que aborta a
- * execução inteira — não há como varrer nada sem conexão — e por isso grava
- * `ultimo_erro` na conta e responde 500 em vez de um 200 vazio.
+ * Os dois últimos passos varrem fila, não a leva que acabou de chegar: um
+ * evento gravado por outra execução (ou pelo backfill do script) volta de
+ * `ingerir` como "duplicado" e nunca seria interpretado se o cron olhasse só
+ * para os message_id desta rodada.
+ *
+ * Cada mensagem é tratada isoladamente (try/catch por item, dentro do loop):
+ * uma mensagem malformada não pode impedir as demais da mesma leva — os
+ * drenadores têm a mesma disciplina, item a item, dentro de fila.ts. Falha de
+ * autenticação IMAP aborta a execução inteira — não há como varrer nada sem
+ * conexão — e por isso grava `ultimo_erro` na conta e responde 500 em vez de
+ * um 200 vazio.
  */
 export default async function handler(_request: Request): Promise<Response> {
   const sb = getSupabase();
@@ -59,13 +64,12 @@ export default async function handler(_request: Request): Promise<Response> {
     return await falharVarredura(sb, mensagemDeErro(e));
   }
 
-  const resumo = { lidos: 0, gravado: 0, duplicado: 0, ignorado: 0, semFonte: 0, processado: 0, falha: 0 };
+  const resumo = { lidos: 0, gravado: 0, duplicado: 0, ignorado: 0, semFonte: 0, falha: 0 };
   let maiorUid = Number(conta.ultimo_uid ?? 0);
 
   try {
     const caixa = await caixaDeTodosOsEmails(client);
     const lock = await client.getMailboxLock(caixa);
-    const messageIdsGravados: string[] = [];
 
     try {
       const desdeUid = maiorUid + 1;
@@ -87,7 +91,6 @@ export default async function handler(_request: Request): Promise<Response> {
           const resultado = await ingerir(email, CONTA_ID);
           if (resultado === "gravado") {
             resumo.gravado++;
-            messageIdsGravados.push(email.messageId);
           } else if (resultado === "duplicado") {
             resumo.duplicado++;
           } else {
@@ -105,31 +108,6 @@ export default async function handler(_request: Request): Promise<Response> {
     } finally {
       lock.release();
     }
-
-    // Um lookup em lote pelos message_id recém-gravados, em vez de um
-    // select por mensagem: até 200 mensagens por execução, uma consulta só.
-    if (messageIdsGravados.length > 0) {
-      const { data: eventosNovos, error: erroEventosNovos } = await sb
-        .from("portais_eventos_raw")
-        .select("id")
-        .eq("conta_id", CONTA_ID)
-        .in("message_id", messageIdsGravados);
-      if (erroEventosNovos) throw new Error(erroEventosNovos.message);
-
-      for (const evento of eventosNovos ?? []) {
-        try {
-          await processarEvento(evento.id);
-          resumo.processado++;
-        } catch (e) {
-          // Mesma disciplina do ingest: um lead que estoura no parser/IA
-          // não pode impedir os outros da mesma leva de serem processados.
-          // ativarLead (chamado por outra rota) tem a mesma cicatriz — não é
-          // chamado daqui, envio real é decisão da operação, fora deste cron.
-          resumo.falha++;
-          console.error(`evento ${evento.id}: falhou ao processar`, e);
-        }
-      }
-    }
   } catch (e) {
     return await falharVarredura(sb, mensagemDeErro(e));
   } finally {
@@ -139,9 +117,30 @@ export default async function handler(_request: Request): Promise<Response> {
     await client.logout().catch(() => {});
   }
 
+  // O cursor é gravado ANTES de drenar as filas: a leitura do IMAP já
+  // terminou, e uma falha no processamento não pode fazer a próxima execução
+  // reler as mesmas mensagens. O que ficou na fila continua lá, esperando.
   await atualizarConta(sb, { ultimo_uid: maiorUid, ultimo_erro: null });
 
-  return json({ conta_id: CONTA_ID, ultimo_uid: maiorUid, ...resumo });
+  let interpretados;
+  let ativados;
+  try {
+    interpretados = await interpretarPendentes();
+    ativados = await ativarPendentes();
+  } catch (e) {
+    // Falha aqui é da consulta da fila (banco fora do ar, RLS), não de um
+    // item — item que estoura é tratado dentro de fila.ts e vira 'falhou'.
+    return await falharVarredura(sb, mensagemDeErro(e));
+  }
+
+  return json({
+    conta_id: CONTA_ID,
+    ultimo_uid: maiorUid,
+    ...resumo,
+    processado: interpretados.processado,
+    ativado: ativados.processado,
+    falha: resumo.falha + interpretados.falha + ativados.falha,
+  });
 }
 
 function mensagemDeErro(e: unknown): string {

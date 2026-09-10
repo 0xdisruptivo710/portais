@@ -5,7 +5,13 @@ import { abrirCaixa, caixaDeTodosOsEmails } from "../api/_lib/imap.js";
 import { paraEmailCru } from "../api/_lib/email.js";
 import { identificarPortal } from "../api/_lib/portal.js";
 import { ingerir } from "../api/_lib/ingestao.js";
+import { interpretarPendentes } from "../api/_lib/fila.js";
 import type { Portal } from "../src/tipos.js";
+
+// O script não tem o teto de 300s da function: o backfill de 90 dias precisa
+// interpretar tudo o que ingeriu numa passada só, senão o acervo de fixtures
+// vem sem os leads correspondentes.
+const TETO_INTERPRETACAO = 10_000;
 
 const dias = Number(process.argv.find((a) => a.startsWith("--dias="))?.split("=")[1] ?? 90);
 const salvarFixtures = process.argv.includes("--fixtures");
@@ -70,3 +76,9 @@ console.log(
   "| sem fonte:", resumo.semFonte,
 );
 console.log("por portal:", contagem);
+
+// Ingerir só grava o e-mail cru. Sem este passo, o backfill de 90 dias
+// terminaria com portais_eventos_raw cheia e portais_leads vazia — e é a
+// contagem por portal em cima dos leads que a cliente vai conferir.
+const fila = await interpretarPendentes({ teto: TETO_INTERPRETACAO });
+console.log("interpretados:", fila.processado, "| falharam:", fila.falha);

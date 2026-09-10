@@ -25,6 +25,9 @@ export const STATUS_ATIVACAO_OPCOES = [
   { valor: "dry_run", rotulo: "Simulado" },
   { valor: "suprimido", rotulo: "Suprimido" },
   { valor: "enviado", rotulo: "Enviado" },
+  // Estado que o drenador de fila (api/_lib/fila.ts) grava quando a ativação
+  // de um lead estoura. Sem a opção aqui, esses leads sumiriam do filtro.
+  { valor: "falhou", rotulo: "Falhou" },
 ] as const;
 
 export { PORTAIS };
