@@ -158,16 +158,36 @@ export async function ativarLead(leadId: number): Promise<Acao> {
 
   // Daqui para baixo só roda com modo_envio = 'real'.
   const resposta = await wtsRequest("POST", "/chat/v1/message/send", payload);
-  // Terceira ocorrência da mesma cicatriz nesta função (as outras duas são o
-  // insert acima e os dois updates de portais_leads em atualizarLinha): sem
-  // conferir a linha de volta, a resposta do WTS se perde da auditoria calado.
-  // Menos grave que as outras (só afeta o registro, não a entrega nem o
-  // estado do lead), mas é a mesma classe de bug, então leva a mesma disciplina.
-  await atualizarLinha(sb, "portais_ativacoes", ativacao[0].id, { resposta_wts: resposta });
+
+  // TODO: entre o envio acima e a gravação abaixo ainda existe uma janela em
+  // que uma queda derruba a função com a mensagem já entregue e nada
+  // registrado — mais estreita que antes (era duas gravações, agora é uma),
+  // mas não eliminada. A correção real é a supressão passar a considerar a
+  // linha de portais_ativacoes (gravada ANTES do envio, já com
+  // payload_enviado) em vez de depender só de portais_leads.enviado_em, só
+  // que isso é mudança de desenho — decidir se uma tentativa conta como
+  // contato — e cabe ao operador, não a este fix.
+
+  // Ordem importa: o estado do lead é o que sustenta a supressão por
+  // reincidência (a consulta acima filtra por `enviado_em is not null`), e
+  // resposta_wts é auditoria auxiliar. Gravar o lead ANTES garante que, se a
+  // gravação de auditoria abaixo estourar, a mensagem já entregue não vire um
+  // envio invisível que a próxima rodada repete para o mesmo cliente.
   await atualizarLinha(sb, "portais_leads", leadId, {
     status_ativacao: "enviado",
     enviado_em: new Date().toISOString(),
   });
+
+  // Falha aqui não pode abortar a função: o estado crítico acima já foi
+  // gravado, e lançar depois dele só escureceria um envio que já deu certo
+  // (a próxima leitura veria o lead sem "enviado" e repetiria a mensagem).
+  // console.warn preserva o rastro pra auditoria manual, sem propagar.
+  try {
+    await atualizarLinha(sb, "portais_ativacoes", ativacao[0].id, { resposta_wts: resposta });
+  } catch (e) {
+    console.warn(`ativacao ${ativacao[0].id}: falha ao gravar resposta_wts`, e);
+  }
+
   return "enviar";
 }
 
