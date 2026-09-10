@@ -135,6 +135,47 @@ describe("PUT /api/config", () => {
     expect(chamadasUpdate).toHaveLength(0);
   });
 
+  // O bug que gerou este item: `from: cfg.wts_from ?? ""` no envio só cobre
+  // null/undefined. Sem esta validação, um PUT gravava "" ou "   " direto no
+  // banco e o remetente chegava vazio ao WTS sem nenhum aviso.
+  it("recusa wts_from vazio", async () => {
+    const { chamadasUpdate } = mockarSupabase();
+    const r = await put({ wts_from: "" });
+    expect(r.status).toBe(400);
+    expect(chamadasUpdate).toHaveLength(0);
+  });
+
+  it("recusa wts_from só espaço", async () => {
+    const { chamadasUpdate } = mockarSupabase();
+    const r = await put({ wts_from: "   " });
+    expect(r.status).toBe(400);
+    expect(chamadasUpdate).toHaveLength(0);
+  });
+
+  it("aceita wts_from preenchido", async () => {
+    const { chamadasUpdate } = mockarSupabase();
+    const r = await put({ wts_from: "5515991280217" });
+    expect(r.status).toBe(200);
+    expect(chamadasUpdate[0].wts_from).toBe("5515991280217");
+  });
+
+  // Mesmo vizinho aberto do wts_from: um texto_boas_vindas vazio monta uma
+  // mensagem vazia (ver ativacao.ts). Bloquear aqui, na gravação, evita
+  // que a config quebrada nem exista.
+  it("recusa texto_boas_vindas vazio", async () => {
+    const { chamadasUpdate } = mockarSupabase();
+    const r = await put({ texto_boas_vindas: "" });
+    expect(r.status).toBe(400);
+    expect(chamadasUpdate).toHaveLength(0);
+  });
+
+  it("recusa texto_boas_vindas só espaço", async () => {
+    const { chamadasUpdate } = mockarSupabase();
+    const r = await put({ texto_boas_vindas: "   " });
+    expect(r.status).toBe(400);
+    expect(chamadasUpdate).toHaveLength(0);
+  });
+
   it("recusa json invalido", async () => {
     mockarSupabase();
     const r = await handler(

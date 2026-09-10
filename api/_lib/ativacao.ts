@@ -65,17 +65,41 @@ export async function ativarLead(leadId: number): Promise<Acao> {
     .single();
   if (!cfg) throw new Error("config do cliente ausente");
 
-  // Lead sem telefone normalizável nunca pode chegar ao ramo de envio: o
-  // normalizador (telefone.ts) devolve null de propósito quando o número é
-  // ambíguo, em vez de adivinhar. Essa checagem tem que vir ANTES da busca de
-  // supressão abaixo — `.eq("telefone_e164", null)` não casa com nada em SQL,
-  // então rodar essa consulta pra um lead sem telefone só mascararia o motivo
-  // real com um "sem supressão" incorreto.
+  // Texto é montado ANTES da cadeia de guardas abaixo porque é o RESULTADO
+  // (não o template cru) que entra na checagem: um template só com
+  // placeholders que a IA não preencheu (ex.: "{veiculo}" sem carro) monta
+  // uma string vazia, e isso só se sabe depois da substituição.
+  const texto = montarTexto(cfg.texto_boas_vindas, {
+    nome: primeiroNome(lead.nome),
+    veiculo: lead.veiculo_texto,
+    portal: rotuloPortal(lead.portal),
+  });
+
+  // Três guardas na mesma cadeia, com a mesma disciplina: qualquer campo que
+  // vá direto pro payload do WTS (from, texto, to) sem conteúdo aproveitável
+  // vira supressão com motivo explícito, ANTES de tocar a rede. Corrigir só
+  // o telefone e deixar from/texto abertos foi exatamente o bug que fez esta
+  // função precisar ficar assim.
   let suprimir: boolean;
   let motivo: string | null;
   if (!lead.telefone_e164) {
+    // Normalizador (telefone.ts) devolve null de propósito quando o número é
+    // ambíguo, em vez de adivinhar. Essa checagem tem que vir ANTES da busca
+    // de supressão abaixo — `.eq("telefone_e164", null)` não casa com nada em
+    // SQL, então rodar essa consulta pra um lead sem telefone só mascararia
+    // o motivo real com um "sem supressão" incorreto.
     suprimir = true;
     motivo = "sem telefone normalizavel";
+  } else if (!campoPreenchido(cfg.wts_from)) {
+    // Falta de remetente é config do cliente, não do lead: bloqueia todo
+    // envio até ser corrigida. Checar aqui (antes da consulta de
+    // reincidência) evita bater no banco à toa em todo lead do cliente
+    // enquanto a config estiver incompleta.
+    suprimir = true;
+    motivo = "remetente nao configurado";
+  } else if (!texto) {
+    suprimir = true;
+    motivo = "texto de boas-vindas vazio";
   } else {
     // Último contato com ESTE telefone, em qualquer portal. É o que impede o
     // lead que anuncia em três portais de receber três "oi" no mesmo dia.
@@ -102,12 +126,6 @@ export async function ativarLead(leadId: number): Promise<Acao> {
     motivo,
     horarioInicio: cfg.horario_inicio,
     horarioFim: cfg.horario_fim,
-  });
-
-  const texto = montarTexto(cfg.texto_boas_vindas, {
-    nome: primeiroNome(lead.nome),
-    veiculo: lead.veiculo_texto,
-    portal: rotuloPortal(lead.portal),
   });
 
   const payload = lead.telefone_e164
@@ -183,6 +201,16 @@ function atualizarLead(
 
 function primeiroNome(nome: string | null): string | null {
   return nome?.trim().split(/\s+/)[0] ?? null;
+}
+
+/**
+ * Um campo de configuração só conta como preenchido se for string com algo
+ * além de espaço. "" e "   " são o mesmo problema que null/undefined — o
+ * campo nunca foi configurado de verdade — mas `?? ""` e checagens de
+ * truthiness comuns não pegam os dois primeiros.
+ */
+function campoPreenchido(v: unknown): boolean {
+  return typeof v === "string" && v.trim().length > 0;
 }
 
 const ROTULOS: Record<string, string> = {

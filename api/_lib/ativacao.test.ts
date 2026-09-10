@@ -111,7 +111,11 @@ const LEAD_BASE = {
 const CFG_BASE = {
   cliente_slug: "malentachi",
   texto_boas_vindas: "Oi {nome}, tudo bem? Vi seu interesse no {veiculo}.",
-  wts_from: "",
+  // Não usar "" aqui: é o valor que expõe o bug do remetente vazio (ver
+  // suíte "wts_from ausente/vazio" abaixo). Um wts_from de verdade na config
+  // base é o que garante que os testes "de caminho feliz" exercitam o
+  // caminho feliz de fato.
+  wts_from: "5515991280217",
   janela_supressao_dias: 30,
   horario_inicio: "08:00:00",
   horario_fim: "20:00:00",
@@ -386,5 +390,50 @@ describe("ativarLead", () => {
 
     await expect(ativarLead(1)).rejects.toThrow();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // O bug original: `from: cfg.wts_from ?? ""` só cobre null/undefined. Uma
+  // config com wts_from = "" (o próprio default de CFG_BASE antes deste
+  // teste existir) chegava ao payload sem remetente e sem nenhuma guarda —
+  // e passava despercebida porque a suíte inteira usava esse mesmo valor.
+  it.each([["vazia", ""], ["só espaço", "   "], ["null", null], ["ausente", undefined]])(
+    "wts_from %s: suprimido com motivo explícito, fetch NUNCA é chamado, motivo fica gravado",
+    async (_rotulo, valor) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00")); // dentro de 08h-20h
+      const { chamadasUpdateLead, chamadasInsertAtivacao } = mockarSupabase({
+        cfg: { ...CFG_BASE, modo_envio: "real", wts_from: valor },
+      });
+
+      const acao = await ativarLead(1);
+
+      expect(acao).toBe("suprimido");
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(chamadasInsertAtivacao[0].erro).toBe("remetente nao configurado");
+      const chamada = chamadasUpdateLead.find((c) => c.status_ativacao === "suprimido");
+      expect(chamada).toBeDefined();
+      expect(chamada?.motivo_supressao).toBe("remetente nao configurado");
+    },
+  );
+
+  // Mesma classe de bug do wts_from, no vizinho: um template só de
+  // placeholders que a IA não preencheu monta uma string vazia, e isso só
+  // se sabe depois da substituição — por isso a guarda mede o resultado de
+  // montarTexto, não o texto_boas_vindas cru.
+  it("texto de boas-vindas vazio após montagem: suprimido, fetch NUNCA é chamado", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00")); // dentro de 08h-20h
+    const { chamadasUpdateLead, chamadasInsertAtivacao } = mockarSupabase({
+      cfg: { ...CFG_BASE, modo_envio: "real", texto_boas_vindas: "   " },
+    });
+
+    const acao = await ativarLead(1);
+
+    expect(acao).toBe("suprimido");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(chamadasInsertAtivacao[0].erro).toBe("texto de boas-vindas vazio");
+    const chamada = chamadasUpdateLead.find((c) => c.status_ativacao === "suprimido");
+    expect(chamada).toBeDefined();
+    expect(chamada?.motivo_supressao).toBe("texto de boas-vindas vazio");
   });
 });

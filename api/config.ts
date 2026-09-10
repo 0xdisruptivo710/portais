@@ -28,6 +28,15 @@ function peneirar(corpo: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
+ * Mesma regra de api/_lib/ativacao.ts (duplicada de propósito: são módulos
+ * sem acoplamento entre si). Só conta como preenchido string com algo além
+ * de espaço — "" e "   " são o mesmo problema que ausente.
+ */
+function campoPreenchido(v: unknown): boolean {
+  return typeof v === "string" && v.trim().length > 0;
+}
+
+/**
  * GET devolve a config do cliente. PUT atualiza. A validação de modo_envio é
  * a trava de segurança do sistema inteiro: só "dry_run" ou "real" passam, e
  * qualquer outro valor — typo, string vazia, número — devolve 400 em vez de
@@ -70,6 +79,16 @@ async function atualizar(request: Request): Promise<Response> {
   }
   if (dados.kill_switch !== undefined && typeof dados.kill_switch !== "boolean") {
     return erro("kill_switch invalido: aceita apenas booleano", 400);
+  }
+  // wts_from e texto_boas_vindas vão direto pro payload que sai pro WTS (ver
+  // ativacao.ts): "" ou "   " gravado aqui chegaria como remetente vazio ou
+  // mensagem vazia, sem nenhum aviso no caminho. Recusar na gravação evita
+  // que a config quebrada chegue a existir.
+  if (dados.wts_from !== undefined && !campoPreenchido(dados.wts_from)) {
+    return erro("wts_from invalido: nao pode ser vazio", 400);
+  }
+  if (dados.texto_boas_vindas !== undefined && !campoPreenchido(dados.texto_boas_vindas)) {
+    return erro("texto_boas_vindas invalido: nao pode ser vazio", 400);
   }
   if (Object.keys(dados).length === 0) return erro("nada para atualizar", 400);
 
