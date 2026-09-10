@@ -131,12 +131,10 @@ export async function ativarLead(leadId: number): Promise<Acao> {
   }
 
   if (acao !== "enviar") {
-    await sb.from("portais_leads")
-      .update({
-        status_ativacao: acao === "suprimido" ? "suprimido" : "dry_run",
-        motivo_supressao: acao === "suprimido" ? motivo : null,
-      })
-      .eq("id", leadId);
+    await atualizarLead(sb, leadId, {
+      status_ativacao: acao === "suprimido" ? "suprimido" : "dry_run",
+      motivo_supressao: acao === "suprimido" ? motivo : null,
+    });
     return acao;
   }
 
@@ -145,10 +143,26 @@ export async function ativarLead(leadId: number): Promise<Acao> {
   await sb.from("portais_ativacoes")
     .update({ resposta_wts: resposta })
     .eq("id", ativacao[0].id);
-  await sb.from("portais_leads")
-    .update({ status_ativacao: "enviado", enviado_em: new Date().toISOString() })
-    .eq("id", leadId);
+  await atualizarLead(sb, leadId, { status_ativacao: "enviado", enviado_em: new Date().toISOString() });
   return "enviar";
+}
+
+/**
+ * PostgREST devolve HTTP 200 com lista vazia quando o "id" não existe — a
+ * mesma cicatriz do insert em portais_ativacoes (e de marcar()/gravarLead()
+ * em processar.ts). Conferir a linha de volta é a única forma de saber que o
+ * update gravou de verdade, não só que a chamada não deu erro.
+ */
+async function atualizarLead(
+  sb: ReturnType<typeof getSupabase>,
+  leadId: number,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const { data, error } = await sb.from("portais_leads").update(payload).eq("id", leadId).select("id");
+  if (error) throw new Error(error.message);
+  if (!data || data.length === 0) {
+    throw new Error(`update em portais_leads nao devolveu linha (lead ${leadId})`);
+  }
 }
 
 function primeiroNome(nome: string | null): string | null {

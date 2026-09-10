@@ -124,6 +124,7 @@ interface EstadoAtivacao {
   cfg?: Record<string, unknown>;
   anteriores?: { enviado_em: string | null }[];
   insertAtivacaoResultado?: { data: { id: number }[] | null; error: unknown };
+  updateLeadResultado?: { data: { id: number }[] | null; error: unknown };
 }
 
 /**
@@ -141,6 +142,7 @@ function construirFrom(estado: EstadoAtivacao) {
   const lead = estado.lead ?? LEAD_BASE;
   const cfg = estado.cfg ?? CFG_BASE;
   const insertAtivacaoResultado = estado.insertAtivacaoResultado ?? { data: [{ id: 501 }], error: null };
+  const updateLeadResultado = estado.updateLeadResultado ?? { data: [{ id: 1 }], error: null };
 
   const from = vi.fn((tabela: string) => {
     if (tabela === "portais_leads") {
@@ -172,7 +174,7 @@ function construirFrom(estado: EstadoAtivacao) {
         }),
         update: vi.fn((payload: Record<string, unknown>) => {
           chamadasUpdateLead.push(payload);
-          return { eq: vi.fn(async () => ({ data: [{ id: 1 }], error: null })) };
+          return { eq: vi.fn(() => ({ select: vi.fn(async () => updateLeadResultado) })) };
         }),
       };
     }
@@ -335,5 +337,35 @@ describe("ativarLead", () => {
     await ativarLead(1);
 
     expect(chamadasSelectAnteriores).toBe(0);
+  });
+
+  // Mesma cicatriz do insert em portais_ativacoes, agora nos dois updates de
+  // portais_leads: PostgREST devolve 200 com lista vazia quando o "id" não
+  // existe. Sem conferir a linha de volta, um lead apagado/renumerado entre a
+  // leitura e a gravação passaria por "suprimido com sucesso" sem ter gravado nada.
+  it("update em portais_leads (caminho suprimido/dry_run) que não devolve linha faz a função estourar", async () => {
+    mockarSupabase({
+      cfg: { ...CFG_BASE, modo_envio: "dry_run" },
+      updateLeadResultado: { data: [], error: null },
+    });
+
+    await expect(ativarLead(1)).rejects.toThrow();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // Mesmo cenário, agora no update final do caminho "enviar" (status
+  // enviado/enviado_em). Como este roda DEPOIS do fetch, a mensagem já saiu —
+  // por isso o teste também confere que o fetch foi mesmo chamado.
+  it("update em portais_leads (caminho enviar) que não devolve linha faz a função estourar", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00")); // dentro de 08h-20h
+    fetchMock.mockResolvedValue({ ok: true, text: async () => JSON.stringify({ id: "msg-1" }) });
+    mockarSupabase({
+      cfg: { ...CFG_BASE, modo_envio: "real" },
+      updateLeadResultado: { data: [], error: null },
+    });
+
+    await expect(ativarLead(1)).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
