@@ -1,0 +1,169 @@
+import type { EmailCru, LeadBruto, Portal } from "../../src/tipos.js";
+import { PORTAIS_COM_DADOS } from "../../src/tipos.js";
+import { getSupabase } from "./supabase.js";
+import { parserDoPortal } from "./parsers/index.js";
+import { extrairComIa } from "./ia.js";
+import { paraE164, paraExibicao } from "./telefone.js";
+import { casarComEstoque } from "./estoque.js";
+
+export type ResultadoProcesso = "lead" | "revisao" | "sem_dados";
+
+/**
+ * Pipeline de interpretação de um evento cru já gravado no banco. Decide
+ * entre lead com dados, lead sem dados (OLX e Mercado Livre só mandam botão),
+ * fila de revisão humana (parser e IA falharam os dois) — a rede de segurança
+ * que garante que nenhum lead se perde — e propaga erro em vez de engolir.
+ */
+export async function processarEvento(eventoId: number): Promise<ResultadoProcesso> {
+  const sb = getSupabase();
+  const { data: ev, error } = await sb
+    .from("portais_eventos_raw")
+    .select("*")
+    .eq("id", eventoId)
+    .single();
+  if (error || !ev) throw new Error(error?.message ?? "evento nao encontrado");
+
+  const portal = ev.portal as Portal;
+  const email: EmailCru = {
+    messageId: ev.message_id,
+    remetente: ev.remetente ?? "",
+    assunto: ev.assunto ?? "",
+    recebidoEm: ev.recebido_em,
+    texto: ev.corpo_texto ?? "",
+    html: ev.corpo_html ?? "",
+    anexos: (ev.anexos ?? []) as EmailCru["anexos"],
+  };
+
+  // OLX e Mercado Livre só mandam botão. Vira card sem dados, com o link.
+  if (!PORTAIS_COM_DADOS.includes(portal)) {
+    await gravarLead(eventoId, portal, null, "baixa", "manual");
+    await marcar(eventoId, "parseado");
+    return "sem_dados";
+  }
+
+  const parser = parserDoPortal(portal);
+  let lead = parser ? parser(email) : null;
+  let metodo: "parser" | "ia" = "parser";
+  let custo = 0;
+
+  if (!lead) {
+    const cfg = await lerConfig();
+    const gastoHoje = await gastoDeHoje();
+    const r = await extrairComIa(email, {
+      gastoHojeUsd: gastoHoje,
+      tetoDiaUsd: cfg.ia_teto_dia_usd,
+      tetoEventoUsd: cfg.ia_teto_evento_usd,
+    });
+    lead = r.lead;
+    custo = r.custoUsd;
+    metodo = "ia";
+  }
+
+  if (custo > 0) {
+    await marcarCustoIa(eventoId, custo);
+  }
+
+  if (!lead) {
+    await marcar(eventoId, "revisao");
+    return "revisao";
+  }
+
+  await gravarLead(eventoId, portal, lead, metodo === "ia" ? "media" : "alta", metodo);
+  await marcar(eventoId, "parseado");
+  return "lead";
+}
+
+async function marcar(eventoId: number, status: string): Promise<void> {
+  const { data, error } = await getSupabase()
+    .from("portais_eventos_raw")
+    .update({ status, processado_em: new Date().toISOString() })
+    .eq("id", eventoId)
+    .select("id");
+  if (error) throw new Error(error.message);
+  // PostgREST devolve 200 e lista vazia quando a linha não existe. Conferir a
+  // linha de volta é a única forma de saber que gravou de verdade.
+  if (!data || data.length === 0) throw new Error(`evento ${eventoId} nao atualizado`);
+}
+
+/**
+ * Grava o custo da IA no evento. Mesma cicatriz do `marcar`: sem conferir a
+ * linha de volta, um update que não acha o evento passa por "sucesso" e o
+ * gasto de hoje some do cálculo do teto diário sem ninguém perceber.
+ */
+async function marcarCustoIa(eventoId: number, custoUsd: number): Promise<void> {
+  const { data, error } = await getSupabase()
+    .from("portais_eventos_raw")
+    .update({ ia_usada: true, ia_custo_usd: custoUsd })
+    .eq("id", eventoId)
+    .select("id");
+  if (error) throw new Error(error.message);
+  if (!data || data.length === 0) throw new Error(`evento ${eventoId} nao atualizado (custo ia)`);
+}
+
+async function lerConfig() {
+  const { data, error } = await getSupabase()
+    .from("portais_config")
+    .select("*")
+    .eq("cliente_slug", "malentachi")
+    .single();
+  if (error || !data) throw new Error(error?.message ?? "config ausente");
+  return data;
+}
+
+/** Soma do que a IA já gastou hoje, para o teto diário valer de fato. */
+async function gastoDeHoje(): Promise<number> {
+  const inicio = new Date();
+  inicio.setHours(0, 0, 0, 0);
+  const { data, error } = await getSupabase()
+    .from("portais_eventos_raw")
+    .select("ia_custo_usd")
+    .gte("created_at", inicio.toISOString());
+  if (error) throw new Error(error.message);
+  return (data ?? []).reduce((s, r) => s + Number(r.ia_custo_usd ?? 0), 0);
+}
+
+async function gravarLead(
+  eventoId: number,
+  portal: Portal,
+  lead: LeadBruto | null,
+  confianca: "alta" | "media" | "baixa",
+  metodo: "parser" | "ia" | "manual",
+): Promise<void> {
+  const sb = getSupabase();
+
+  const { data: estoque } = await sb
+    .from("estoque_malentachi")
+    .select("id,marca,modelo,ano,link");
+
+  const e164 = paraE164(lead?.telefone ?? null);
+
+  const { data, error } = await sb
+    .from("portais_leads")
+    .upsert(
+      {
+        evento_id: eventoId,
+        cliente_slug: "malentachi",
+        portal,
+        nome: lead?.nome ?? null,
+        telefone_e164: e164,
+        telefone_exibicao: paraExibicao(e164),
+        email: lead?.email ?? null,
+        veiculo_texto: lead?.veiculoTexto ?? null,
+        estoque_id: casarComEstoque(lead?.veiculoTexto ?? null, lead?.anuncioUrl ?? null, estoque ?? []),
+        anuncio_url: lead?.anuncioUrl ?? null,
+        anuncio_id_externo: lead?.anuncioIdExterno ?? null,
+        mensagem_lead: lead?.mensagemLead ?? null,
+        capturado_em: new Date().toISOString(),
+        confianca,
+        metodo,
+        status_ativacao: "pendente",
+      },
+      // Deliberado: permite reprocessar o mesmo evento (ex.: parser melhorou)
+      // sem criar lead duplicado. Não trocar por insert.
+      { onConflict: "evento_id" },
+    )
+    .select("id");
+
+  if (error) throw new Error(error.message);
+  if (!data || data.length === 0) throw new Error(`lead do evento ${eventoId} nao gravado`);
+}
