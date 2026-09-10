@@ -14,9 +14,12 @@ interface LeadItem {
 }
 
 /**
- * O endpoint /api/leads só filtra por portal (e paginação) hoje. Período e
- * status são filtrados aqui, em memória, sobre o que já veio: o volume desta
- * base ainda não justifica mexer no contrato do endpoint por isso.
+ * O endpoint /api/leads já aceita `?portal=` nativamente: o filtro de portal
+ * vai na query, não em memória (filtrar em memória sobre só os 50 mais
+ * recentes escondia lead de um portal que não coubesse nessa primeira
+ * página). Período e status ainda são filtrados aqui, sobre o que já veio —
+ * o volume desta base ainda não justifica estender o contrato do endpoint
+ * pra esses dois.
  */
 export default function Leads() {
   const [itens, setItens] = useState<LeadItem[]>([]);
@@ -30,7 +33,9 @@ export default function Leads() {
 
   useEffect(() => {
     let ativo = true;
-    buscarJson<{ itens: LeadItem[] }>("/api/leads")
+    setCarregando(true);
+    const url = portalFiltro ? `/api/leads?portal=${portalFiltro}` : "/api/leads";
+    buscarJson<{ itens: LeadItem[] }>(url)
       .then((resposta) => {
         if (ativo) setItens(resposta.itens);
       })
@@ -43,11 +48,10 @@ export default function Leads() {
     return () => {
       ativo = false;
     };
-  }, []);
+  }, [portalFiltro]);
 
   const itensFiltrados = useMemo(() => {
     return itens.filter((item) => {
-      if (portalFiltro && item.portal !== portalFiltro) return false;
       if (statusFiltro && item.status_ativacao !== statusFiltro) return false;
       const dataItem = item.capturado_em ?? item.created_at ?? null;
       if (dataItem) {
@@ -57,7 +61,7 @@ export default function Leads() {
       }
       return true;
     });
-  }, [itens, portalFiltro, statusFiltro, inicioFiltro, fimFiltro]);
+  }, [itens, statusFiltro, inicioFiltro, fimFiltro]);
 
   return (
     <section>
