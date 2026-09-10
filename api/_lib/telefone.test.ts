@@ -50,6 +50,28 @@ describe("paraE164", () => {
     expect(paraE164("(00) 99128-0217")).toBeNull();
     expect(paraE164("(10) 99128-0217")).toBeNull();
   });
+
+  it("recusa dois zeros de tronco emendados: DDD nunca começa com zero", () => {
+    expect(paraE164("00991280217")).toBeNull();
+  });
+
+  it("recusa DDD válido quando sobra outro zero após remover o tronco", () => {
+    // Dois zeros + DDD 15 real + celular de 9 dígitos. Com o `while` antigo
+    // os dois zeros somem e o resultado "5515991280217" passa validado às
+    // cegas. Zero de tronco é no máximo um: sobrar outro depois do corte é
+    // lixo, não uma segunda operadora.
+    expect(paraE164("0015991280217")).toBeNull();
+  });
+
+  it("funde DDD fictício '0X' com o 9 do celular — ambiguidade estrutural, não bug novo (ver comentário em telefone.ts)", () => {
+    // "01" e "04" não são DDD, mas depois de tirar o zero de tronco sobra
+    // "19"/"49" — que SÃO válidos. Não há como saber, só pelos dígitos, se o
+    // zero era tronco (e "19"/"49" é DDD real) ou se "01"/"04" era o DDD
+    // fictício fundido com o 9 do celular. Documentado como resíduo
+    // deliberado: não inventamos heurística para separar os dois casos.
+    expect(paraE164("(01) 99128-0217")).toBe("551991280217");
+    expect(paraE164("(04) 99128-0217")).toBe("554991280217");
+  });
 });
 
 describe("paraExibicao", () => {

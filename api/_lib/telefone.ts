@@ -19,8 +19,21 @@ export function paraE164(bruto: string | null): string | null {
   let digitos = bruto.replace(/[^0-9]/g, "");
   if (!digitos) return null;
 
-  // Zero de operadora na frente (0 15 99128...)
-  while (digitos.startsWith("0")) digitos = digitos.slice(1);
+  // Zero de operadora na frente (0 15 99128...). No máximo um: DDD nunca
+  // começa com zero, então sobrar outro depois deste corte é lixo (ou dois
+  // trontos emendados), não uma segunda operadora — nunca usar `while` aqui.
+  //
+  // Resíduo conhecido e deliberadamente não resolvido: um número de 11
+  // dígitos com exatamente um zero na frente é ambíguo por natureza. Ex.:
+  // "01532451234" (tronco 0 + DDD 15 real + fixo "32451234") e
+  // "01991280217" (DDD fictício "01" que, ao perder o zero, se funde com o 9
+  // do celular e "vira" DDD "19" + "91280217") têm exatamente a mesma forma
+  // depois do corte — não existe informação no dado para separar os dois.
+  // Inventar uma regra pra escolher um dos dois seria chute; a rede de
+  // segurança pra esse caso é a fila de revisão humana mais adiante no
+  // sistema, não esta função.
+  if (digitos.startsWith("0")) digitos = digitos.slice(1);
+  if (digitos.startsWith("0")) return null;
 
   // Já vem com o código do país
   if (digitos.length === 12 || digitos.length === 13) {
