@@ -213,7 +213,11 @@ function campoPreenchido(v: unknown): boolean {
   return typeof v === "string" && v.trim().length > 0;
 }
 
-const ROTULOS: Record<string, string> = {
+// Exportado só para o teste de consistência (src/lib/portais.test.ts) — que
+// compara este mapa com o duplicado em src/lib/portais.ts. Nenhum código de
+// produção deste lado importa o mapa de fora; quem quiser o rótulo usa
+// rotuloPortal().
+export const ROTULOS: Record<string, string> = {
   webmotors: "Webmotors",
   icarros: "iCarros",
   chavesnamao: "Chaves na Mão",
