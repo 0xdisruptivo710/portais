@@ -125,6 +125,7 @@ interface EstadoAtivacao {
   anteriores?: { enviado_em: string | null }[];
   insertAtivacaoResultado?: { data: { id: number }[] | null; error: unknown };
   updateLeadResultado?: { data: { id: number }[] | null; error: unknown };
+  updateAtivacaoResultado?: { data: { id: number }[] | null; error: unknown };
 }
 
 /**
@@ -143,6 +144,7 @@ function construirFrom(estado: EstadoAtivacao) {
   const cfg = estado.cfg ?? CFG_BASE;
   const insertAtivacaoResultado = estado.insertAtivacaoResultado ?? { data: [{ id: 501 }], error: null };
   const updateLeadResultado = estado.updateLeadResultado ?? { data: [{ id: 1 }], error: null };
+  const updateAtivacaoResultado = estado.updateAtivacaoResultado ?? { data: [{ id: 501 }], error: null };
 
   const from = vi.fn((tabela: string) => {
     if (tabela === "portais_leads") {
@@ -195,7 +197,7 @@ function construirFrom(estado: EstadoAtivacao) {
         }),
         update: vi.fn((payload: Record<string, unknown>) => {
           chamadasUpdateAtivacao.push(payload);
-          return { eq: vi.fn(async () => ({ data: [{ id: 501 }], error: null })) };
+          return { eq: vi.fn(() => ({ select: vi.fn(async () => updateAtivacaoResultado) })) };
         }),
       };
     }
@@ -363,6 +365,23 @@ describe("ativarLead", () => {
     mockarSupabase({
       cfg: { ...CFG_BASE, modo_envio: "real" },
       updateLeadResultado: { data: [], error: null },
+    });
+
+    await expect(ativarLead(1)).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // Terceira ocorrência da mesma cicatriz, agora no update de resposta_wts em
+  // portais_ativacoes: PostgREST devolve 200 com lista vazia quando o "id" não
+  // existe. Sem conferir a linha de volta, a resposta do WTS se perde da
+  // auditoria sem que nada avise.
+  it("update de resposta_wts em portais_ativacoes que não devolve linha faz a função estourar", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00")); // dentro de 08h-20h
+    fetchMock.mockResolvedValue({ ok: true, text: async () => JSON.stringify({ id: "msg-1" }) });
+    mockarSupabase({
+      cfg: { ...CFG_BASE, modo_envio: "real" },
+      updateAtivacaoResultado: { data: [], error: null },
     });
 
     await expect(ativarLead(1)).rejects.toThrow();

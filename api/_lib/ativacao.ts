@@ -140,10 +140,16 @@ export async function ativarLead(leadId: number): Promise<Acao> {
 
   // Daqui para baixo só roda com modo_envio = 'real'.
   const resposta = await wtsRequest("POST", "/chat/v1/message/send", payload);
-  await sb.from("portais_ativacoes")
-    .update({ resposta_wts: resposta })
-    .eq("id", ativacao[0].id);
-  await atualizarLead(sb, leadId, { status_ativacao: "enviado", enviado_em: new Date().toISOString() });
+  // Terceira ocorrência da mesma cicatriz nesta função (as outras duas são o
+  // insert acima e os dois updates de portais_leads em atualizarLinha): sem
+  // conferir a linha de volta, a resposta do WTS se perde da auditoria calado.
+  // Menos grave que as outras (só afeta o registro, não a entrega nem o
+  // estado do lead), mas é a mesma classe de bug, então leva a mesma disciplina.
+  await atualizarLinha(sb, "portais_ativacoes", ativacao[0].id, { resposta_wts: resposta });
+  await atualizarLinha(sb, "portais_leads", leadId, {
+    status_ativacao: "enviado",
+    enviado_em: new Date().toISOString(),
+  });
   return "enviar";
 }
 
@@ -151,18 +157,28 @@ export async function ativarLead(leadId: number): Promise<Acao> {
  * PostgREST devolve HTTP 200 com lista vazia quando o "id" não existe — a
  * mesma cicatriz do insert em portais_ativacoes (e de marcar()/gravarLead()
  * em processar.ts). Conferir a linha de volta é a única forma de saber que o
- * update gravou de verdade, não só que a chamada não deu erro.
+ * update gravou de verdade, não só que a chamada não deu erro. Genérico por
+ * tabela porque a mesma checagem se repete em portais_leads e portais_ativacoes.
  */
-async function atualizarLead(
+async function atualizarLinha(
+  sb: ReturnType<typeof getSupabase>,
+  tabela: string,
+  id: number,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const { data, error } = await sb.from(tabela).update(payload).eq("id", id).select("id");
+  if (error) throw new Error(error.message);
+  if (!data || data.length === 0) {
+    throw new Error(`update em ${tabela} nao devolveu linha (id ${id})`);
+  }
+}
+
+function atualizarLead(
   sb: ReturnType<typeof getSupabase>,
   leadId: number,
   payload: Record<string, unknown>,
 ): Promise<void> {
-  const { data, error } = await sb.from("portais_leads").update(payload).eq("id", leadId).select("id");
-  if (error) throw new Error(error.message);
-  if (!data || data.length === 0) {
-    throw new Error(`update em portais_leads nao devolveu linha (lead ${leadId})`);
-  }
+  return atualizarLinha(sb, "portais_leads", leadId, payload);
 }
 
 function primeiroNome(nome: string | null): string | null {
