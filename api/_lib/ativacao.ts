@@ -148,6 +148,15 @@ export async function ativarLead(leadId: number): Promise<Acao> {
     throw new Error("insert em portais_ativacoes nao devolveu linha");
   }
 
+  if (acao === "adiar") {
+    // Fora da janela: o lead PERMANECE "pendente" — não gravamos nada aqui —
+    // para que a próxima execução do cron dentro do horário repesque este
+    // mesmo id via ativarPendentes (fila.ts só seleciona status_ativacao =
+    // 'pendente'). A linha de auditoria acima já registra a tentativa adiada
+    // com o motivo "fora da janela".
+    return acao;
+  }
+
   if (acao !== "enviar") {
     await atualizarLead(sb, leadId, {
       status_ativacao: acao === "suprimido" ? "suprimido" : "dry_run",

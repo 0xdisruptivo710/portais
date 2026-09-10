@@ -106,6 +106,9 @@ const LEAD_BASE = {
   nome: "Fulano da Silva",
   veiculo_texto: "Civic 2020",
   portal: "webmotors",
+  // Espelha a realidade: só chega em ativarLead quem ativarPendentes (fila.ts)
+  // selecionou com status_ativacao = 'pendente'.
+  status_ativacao: "pendente",
 };
 
 const CFG_BASE = {
@@ -277,15 +280,19 @@ describe("ativarLead", () => {
     expect(chamada?.motivo_supressao).toBe("kill-switch ligado");
   });
 
-  it("modo real fora da janela de horário: fetch não é chamado (decisão adiar)", async () => {
+  it("modo real fora da janela de horário: fetch não é chamado e o lead permanece pendente (decisão adiar)", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-10T03:00:00-03:00")); // 3h da manhã, fora de 08h-20h
-    mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "real" } });
+    const { chamadasUpdateLead } = mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "real" } });
 
     const acao = await ativarLead(1);
 
     expect(acao).toBe("adiar");
     expect(fetchMock).not.toHaveBeenCalled();
+    // O lead tem que permanecer "pendente" (nenhuma escrita em portais_leads
+    // aqui), senão ativarPendentes (que só seleciona status_ativacao =
+    // 'pendente') nunca mais repesca este id e o lead some da fila até 08h.
+    expect(chamadasUpdateLead).toHaveLength(0);
   });
 
   it("modo real, sem supressão, dentro da janela: fetch É chamado e o lead vai para status enviado", async () => {
