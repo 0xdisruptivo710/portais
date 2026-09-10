@@ -136,6 +136,7 @@ function construirFrom(estado: EstadoAtivacao) {
   const chamadasInsertAtivacao: Record<string, unknown>[] = [];
   const chamadasUpdateAtivacao: Record<string, unknown>[] = [];
   const chamadasUpdateLead: Record<string, unknown>[] = [];
+  let chamadasSelectAnteriores = 0;
 
   const lead = estado.lead ?? LEAD_BASE;
   const cfg = estado.cfg ?? CFG_BASE;
@@ -156,6 +157,7 @@ function construirFrom(estado: EstadoAtivacao) {
             };
           }
           // cols === "enviado_em": busca do último contato com este telefone.
+          chamadasSelectAnteriores++;
           return {
             eq: vi.fn(() => ({
               eq: vi.fn(() => ({
@@ -198,7 +200,15 @@ function construirFrom(estado: EstadoAtivacao) {
     throw new Error(`tabela inesperada no mock: ${tabela}`);
   });
 
-  return { from, chamadasInsertAtivacao, chamadasUpdateAtivacao, chamadasUpdateLead };
+  return {
+    from,
+    chamadasInsertAtivacao,
+    chamadasUpdateAtivacao,
+    chamadasUpdateLead,
+    get chamadasSelectAnteriores() {
+      return chamadasSelectAnteriores;
+    },
+  };
 }
 
 function mockarSupabase(estado: EstadoAtivacao = {}) {
@@ -289,5 +299,41 @@ describe("ativarLead", () => {
 
     await expect(ativarLead(1)).rejects.toThrow();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // O normalizador de telefone devolve null de propósito quando o número é
+  // ambíguo (ver telefone.ts). Sem esta guarda, decidirAcao nunca vê o
+  // telefone ausente e libera "enviar" — wtsRequest faria JSON.stringify(null)
+  // e postaria a string "null" pro WTS.
+  it("lead sem telefone_e164, em modo real e dentro da janela: fetch NUNCA é chamado, motivo fica gravado", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00")); // dentro de 08h-20h
+    const { chamadasUpdateLead, chamadasInsertAtivacao } = mockarSupabase({
+      lead: { ...LEAD_BASE, telefone_e164: null },
+      cfg: { ...CFG_BASE, modo_envio: "real" },
+    });
+
+    const acao = await ativarLead(1);
+
+    expect(acao).toBe("suprimido");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(chamadasInsertAtivacao[0].erro).toBe("sem telefone normalizavel");
+    const chamada = chamadasUpdateLead.find((c) => c.status_ativacao === "suprimido");
+    expect(chamada).toBeDefined();
+    expect(chamada?.motivo_supressao).toBe("sem telefone normalizavel");
+  });
+
+  // A checagem de telefone ausente precisa vir ANTES da busca de supressão:
+  // `.eq("telefone_e164", null)` não casa com nada em SQL, então emitir essa
+  // consulta pra um lead sem telefone é só ruído (e mascararia a real razão).
+  it("lead sem telefone_e164: não emite a consulta de supressão por reincidência", async () => {
+    const { chamadasSelectAnteriores } = mockarSupabase({
+      lead: { ...LEAD_BASE, telefone_e164: null },
+      cfg: { ...CFG_BASE, modo_envio: "real" },
+    });
+
+    await ativarLead(1);
+
+    expect(chamadasSelectAnteriores).toBe(0);
   });
 });

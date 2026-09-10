@@ -65,23 +65,36 @@ export async function ativarLead(leadId: number): Promise<Acao> {
     .single();
   if (!cfg) throw new Error("config do cliente ausente");
 
-  // Último contato com ESTE telefone, em qualquer portal. É o que impede o
-  // lead que anuncia em três portais de receber três "oi" no mesmo dia.
-  const { data: anteriores } = await sb
-    .from("portais_leads")
-    .select("enviado_em")
-    .eq("cliente_slug", lead.cliente_slug)
-    .eq("telefone_e164", lead.telefone_e164)
-    .not("enviado_em", "is", null)
-    .order("enviado_em", { ascending: false })
-    .limit(1);
+  // Lead sem telefone normalizável nunca pode chegar ao ramo de envio: o
+  // normalizador (telefone.ts) devolve null de propósito quando o número é
+  // ambíguo, em vez de adivinhar. Essa checagem tem que vir ANTES da busca de
+  // supressão abaixo — `.eq("telefone_e164", null)` não casa com nada em SQL,
+  // então rodar essa consulta pra um lead sem telefone só mascararia o motivo
+  // real com um "sem supressão" incorreto.
+  let suprimir: boolean;
+  let motivo: string | null;
+  if (!lead.telefone_e164) {
+    suprimir = true;
+    motivo = "sem telefone normalizavel";
+  } else {
+    // Último contato com ESTE telefone, em qualquer portal. É o que impede o
+    // lead que anuncia em três portais de receber três "oi" no mesmo dia.
+    const { data: anteriores } = await sb
+      .from("portais_leads")
+      .select("enviado_em")
+      .eq("cliente_slug", lead.cliente_slug)
+      .eq("telefone_e164", lead.telefone_e164)
+      .not("enviado_em", "is", null)
+      .order("enviado_em", { ascending: false })
+      .limit(1);
 
-  const { suprimir, motivo } = decidirSupressao({
-    ultimoContatoEm: anteriores?.[0]?.enviado_em ? new Date(anteriores[0].enviado_em) : null,
-    janelaDias: cfg.janela_supressao_dias,
-    agora: new Date(),
-    killSwitch: cfg.kill_switch,
-  });
+    ({ suprimir, motivo } = decidirSupressao({
+      ultimoContatoEm: anteriores?.[0]?.enviado_em ? new Date(anteriores[0].enviado_em) : null,
+      janelaDias: cfg.janela_supressao_dias,
+      agora: new Date(),
+      killSwitch: cfg.kill_switch,
+    }));
+  }
 
   const acao = decidirAcao({
     modo: cfg.modo_envio,
