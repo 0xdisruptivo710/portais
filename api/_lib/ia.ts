@@ -53,25 +53,41 @@ export async function extrairComIa(
       image_url: { url: `data:${a.tipo};base64,${a.conteudoBase64}` },
     }));
 
-  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: { authorization: `Bearer ${chave}`, "content-type": "application/json" },
-    body: JSON.stringify({
-      model: MODELO,
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "user",
-          content: [{ type: "text", text: montarPrompt(email) }, ...imagens],
-        },
-      ],
-    }),
-  });
+  let resp: Response;
+  try {
+    resp = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${chave}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: MODELO,
+        response_format: { type: "json_object" },
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: montarPrompt(email) }, ...imagens],
+          },
+        ],
+      }),
+    });
+  } catch {
+    // Falha de rede (timeout, DNS, conexão resetada): a chamada não
+    // completou, então nada foi cobrado. Sem isso, uma oscilação de rede
+    // num e-mail rejeita a Promise e aborta o lote inteiro no cron.
+    return { lead: null, custoUsd: 0 };
+  }
 
   if (!resp.ok) return { lead: null, custoUsd: 0 };
 
-  const dados = await resp.json();
-  const bruto = dados?.choices?.[0]?.message?.content;
+  let dados: unknown;
+  try {
+    dados = await resp.json();
+  } catch {
+    // resp.ok mas o corpo não é JSON válido: a chamada foi cobrada, mesmo
+    // sem dado utilizável. Custo diferente da falha de rede acima.
+    return { lead: null, custoUsd: CUSTO_ESTIMADO_USD };
+  }
+
+  const bruto = (dados as { choices?: { message?: { content?: string } }[] })?.choices?.[0]?.message?.content;
   if (!bruto) return { lead: null, custoUsd: CUSTO_ESTIMADO_USD };
 
   try {
