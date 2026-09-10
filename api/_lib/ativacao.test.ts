@@ -142,6 +142,9 @@ function construirFrom(estado: EstadoAtivacao) {
   const chamadasInsertAtivacao: Record<string, unknown>[] = [];
   const chamadasUpdateAtivacao: Record<string, unknown>[] = [];
   const chamadasUpdateLead: Record<string, unknown>[] = [];
+  // Ordem observável dos dois updates do ramo "enviar": precisa ser
+  // ["lead", "ativacao"], nunca o contrário — é o que a correção garante.
+  const ordemUpdates: string[] = [];
   let chamadasSelectAnteriores = 0;
 
   const lead = estado.lead ?? LEAD_BASE;
@@ -180,6 +183,7 @@ function construirFrom(estado: EstadoAtivacao) {
         }),
         update: vi.fn((payload: Record<string, unknown>) => {
           chamadasUpdateLead.push(payload);
+          ordemUpdates.push("lead");
           return { eq: vi.fn(() => ({ select: vi.fn(async () => updateLeadResultado) })) };
         }),
       };
@@ -201,6 +205,7 @@ function construirFrom(estado: EstadoAtivacao) {
         }),
         update: vi.fn((payload: Record<string, unknown>) => {
           chamadasUpdateAtivacao.push(payload);
+          ordemUpdates.push("ativacao");
           return { eq: vi.fn(() => ({ select: vi.fn(async () => updateAtivacaoResultado) })) };
         }),
       };
@@ -213,6 +218,7 @@ function construirFrom(estado: EstadoAtivacao) {
     chamadasInsertAtivacao,
     chamadasUpdateAtivacao,
     chamadasUpdateLead,
+    ordemUpdates,
     get chamadasSelectAnteriores() {
       return chamadasSelectAnteriores;
     },
@@ -375,21 +381,44 @@ describe("ativarLead", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  // Terceira ocorrência da mesma cicatriz, agora no update de resposta_wts em
-  // portais_ativacoes: PostgREST devolve 200 com lista vazia quando o "id" não
-  // existe. Sem conferir a linha de volta, a resposta do WTS se perde da
-  // auditoria sem que nada avise.
-  it("update de resposta_wts em portais_ativacoes que não devolve linha faz a função estourar", async () => {
+  // O estado do lead (status_ativacao/enviado_em) é o que sustenta a
+  // supressão por reincidência; resposta_wts é só auditoria auxiliar. Uma
+  // falha em gravar resposta_wts não pode abortar a função depois que o
+  // estado crítico já foi gravado — do contrário o lead nunca fica marcado
+  // como "enviado" e a próxima rodada manda a mesma mensagem de novo.
+  it("update de resposta_wts em portais_ativacoes que não devolve linha NÃO aborta: lead fica marcado como enviado e a exceção não propaga", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00")); // dentro de 08h-20h
     fetchMock.mockResolvedValue({ ok: true, text: async () => JSON.stringify({ id: "msg-1" }) });
-    mockarSupabase({
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { chamadasUpdateLead } = mockarSupabase({
       cfg: { ...CFG_BASE, modo_envio: "real" },
       updateAtivacaoResultado: { data: [], error: null },
     });
 
-    await expect(ativarLead(1)).rejects.toThrow();
+    const acao = await ativarLead(1);
+
+    expect(acao).toBe("enviar");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    const chamada = chamadasUpdateLead.find((c) => c.status_ativacao === "enviado");
+    expect(chamada).toBeDefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
+  });
+
+  // Ordem importa: se a gravação do estado do lead rodasse depois da
+  // auditoria (ordem antiga), uma falha na auditoria bloquearia justamente a
+  // gravação da qual a supressão depende. Confere a ordem observável nos
+  // mocks, não só o resultado final.
+  it("grava o estado do lead (enviado) ANTES do registro de auditoria (resposta_wts)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00")); // dentro de 08h-20h
+    fetchMock.mockResolvedValue({ ok: true, text: async () => JSON.stringify({ id: "msg-1" }) });
+    const { ordemUpdates } = mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "real" } });
+
+    await ativarLead(1);
+
+    expect(ordemUpdates).toEqual(["lead", "ativacao"]);
   });
 
   // O bug original: `from: cfg.wts_from ?? ""` só cobre null/undefined. Uma
