@@ -76,6 +76,14 @@ describe("exigirAdmin", () => {
     delete process.env.ADMIN_SESSION_SECRET;
     expect(exigirAdmin(comCookie(assinarSessao(Date.now() + 60_000, SEGREDO)))?.status).toBe(500);
   });
+
+  it("recusa com 401 (nao 500) cookie com percent-encoding invalido", () => {
+    // lerCookie fazia decodeURIComponent sem tratamento: "%" sozinho lanca
+    // URIError e derrubava a guarda com 500 antes mesmo de checar a sessao.
+    // Cookie ilegivel tem que valer como cookie ausente.
+    const r = exigirAdmin(comCookie("%"));
+    expect(r?.status).toBe(401);
+  });
 });
 
 describe("exigirCron", () => {
