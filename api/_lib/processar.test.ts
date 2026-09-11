@@ -37,7 +37,10 @@ function eventoBase(overrides: Partial<Record<string, unknown>> = {}) {
     portal: "webmotors",
     message_id: "<abc@webmotors.com.br>",
     remetente: "leads@webmotors.com.br",
-    assunto: "Novo lead",
+    // Precisa bater no portão de assunto (ver ehLead.ts): sem isso, todo
+    // teste que não sobrescreve `assunto` cairia em "ignorado" antes de
+    // chegar no parser ou na IA, que é o que os outros testes exercitam.
+    assunto: "Proposta para o carro Honda Civic 2020",
     recebido_em: "2026-09-10T12:00:00.000Z",
     corpo_texto: "corpo",
     corpo_html: "<p>corpo</p>",
@@ -130,7 +133,9 @@ beforeEach(() => {
 
 describe("processarEvento", () => {
   it("portal fora de PORTAIS_COM_DADOS grava lead sem dados, sem chamar parser nem IA", async () => {
-    const { chamadasUpsertLead } = mockarSupabase({ evento: eventoBase({ portal: "olx" }) });
+    const { chamadasUpsertLead } = mockarSupabase({
+      evento: eventoBase({ portal: "olx", assunto: "Oba! Tem mensagem nova de Fulano" }),
+    });
 
     const resultado = await processarEvento(1);
 
@@ -141,6 +146,17 @@ describe("processarEvento", () => {
     expect(chamadasUpsertLead[0].payload.metodo).toBe("manual");
     expect(chamadasUpsertLead[0].payload.confianca).toBe("baixa");
     expect(chamadasUpsertLead[0].payload.nome).toBeNull();
+  });
+
+  it("mercadolivre com assunto de lead também grava lead sem dados", async () => {
+    const { chamadasUpsertLead } = mockarSupabase({
+      evento: eventoBase({ portal: "mercadolivre", assunto: "Você tem uma pessoa interessada no seu anúncio" }),
+    });
+
+    const resultado = await processarEvento(1);
+
+    expect(resultado).toBe("sem_dados");
+    expect(chamadasUpsertLead).toHaveLength(1);
   });
 
   it("parser determinístico devolve lead: não chama a IA", async () => {
@@ -195,5 +211,59 @@ describe("processarEvento", () => {
     expect(chamadaCusto).toBeDefined();
     expect(chamadaCusto?.ia_usada).toBe(true);
     expect(chamadaCusto?.ia_custo_usd).toBe(0.004);
+  });
+
+  // Portão de assunto (ver ehLead.ts): os 114 leads falsos medidos no banco
+  // (OLX, Mercado Livre e Webmotors via IA) nasceram porque nada barrava
+  // fatura, propaganda e alerta de segurança do mesmo domínio do lead ANTES
+  // de virar card. Estes três testes provam o bloqueio nos três pontos de
+  // entrada diferentes que o pipeline tinha para esse ruído.
+  describe("portão de assunto barra ruído antes de parser e IA", () => {
+    it("olx com assunto de propaganda: ignorado, sem lead, sem chamar parser nem IA", async () => {
+      const { chamadasUpsertLead, chamadasUpdate } = mockarSupabase({
+        evento: eventoBase({ portal: "olx", assunto: "Parabéns, o seu anúncio está ativo!" }),
+      });
+
+      const resultado = await processarEvento(1);
+
+      expect(resultado).toBe("ignorado");
+      expect(parserDoPortal).not.toHaveBeenCalled();
+      expect(extrairComIa).not.toHaveBeenCalled();
+      expect(chamadasUpsertLead).toHaveLength(0);
+      expect(chamadasUpdate.some((c) => c.status === "ignorado")).toBe(true);
+    });
+
+    it("mercadolivre com assunto de código de verificação: ignorado, sem lead, sem chamar parser nem IA", async () => {
+      const { chamadasUpsertLead, chamadasUpdate } = mockarSupabase({
+        evento: eventoBase({ portal: "mercadolivre", assunto: "Seu código de verificação chegou" }),
+      });
+
+      const resultado = await processarEvento(1);
+
+      expect(resultado).toBe("ignorado");
+      expect(parserDoPortal).not.toHaveBeenCalled();
+      expect(extrairComIa).not.toHaveBeenCalled();
+      expect(chamadasUpsertLead).toHaveLength(0);
+      expect(chamadasUpdate.some((c) => c.status === "ignorado")).toBe(true);
+    });
+
+    it("webmotors com assunto de fatura: ignorado antes do fallback de IA (era a origem dos 10 leads falsos)", async () => {
+      const { chamadasUpsertLead, chamadasUpdate } = mockarSupabase({
+        evento: eventoBase({ portal: "webmotors", assunto: "Webmotors - Lembrete de Pagamento" }),
+      });
+      // Se o portão não bloquear antes, o parser (que também tem seu próprio
+      // portão) devolveria null e cairia no fallback de IA, mockado aqui como
+      // se "achasse" um lead — exatamente o bug que gerou os 10 falsos.
+      vi.mocked(parserDoPortal).mockReturnValue(() => null);
+      vi.mocked(extrairComIa).mockResolvedValue({ lead: LEAD_IA, custoUsd: 0.004 });
+
+      const resultado = await processarEvento(1);
+
+      expect(resultado).toBe("ignorado");
+      expect(parserDoPortal).not.toHaveBeenCalled();
+      expect(extrairComIa).not.toHaveBeenCalled();
+      expect(chamadasUpsertLead).toHaveLength(0);
+      expect(chamadasUpdate.some((c) => c.status === "ignorado")).toBe(true);
+    });
   });
 });

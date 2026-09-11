@@ -3,10 +3,11 @@ import { PORTAIS_COM_DADOS } from "../../src/tipos.js";
 import { getSupabase } from "./supabase.js";
 import { parserDoPortal } from "./parsers/index.js";
 import { extrairComIa } from "./ia.js";
+import { ehLead } from "./ehLead.js";
 import { paraE164, paraExibicao } from "./telefone.js";
 import { casarComEstoque } from "./estoque.js";
 
-export type ResultadoProcesso = "lead" | "revisao" | "sem_dados";
+export type ResultadoProcesso = "lead" | "revisao" | "sem_dados" | "ignorado";
 
 /**
  * Pipeline de interpretação de um evento cru já gravado no banco. Decide
@@ -33,6 +34,16 @@ export async function processarEvento(eventoId: number): Promise<ResultadoProces
     html: ev.corpo_html ?? "",
     anexos: (ev.anexos ?? []) as EmailCru["anexos"],
   };
+
+  // Portão de assunto, antes de qualquer bifurcação e para todo portal:
+  // fatura, propaganda, alerta de segurança e comunicado chegam do mesmo
+  // remetente do lead. Sem isso, OLX e Mercado Livre (que não têm parser)
+  // viravam "lead sem dados" com qualquer assunto, e um portal com parser
+  // cujo assunto não é lead caía no fallback de IA, que inventa um nome.
+  if (!ehLead(portal, email.assunto)) {
+    await marcar(eventoId, "ignorado");
+    return "ignorado";
+  }
 
   // OLX e Mercado Livre só mandam botão. Vira card sem dados, com o link.
   if (!PORTAIS_COM_DADOS.includes(portal)) {
