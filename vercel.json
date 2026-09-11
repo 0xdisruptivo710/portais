@@ -1,6 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "crons": [{ "path": "/api/cron/varrer", "schedule": "*/5 * * * *" }],
+  "crons": [{ "path": "/api/cron/varrer", "schedule": "0 9 * * *" }],
+  "functions": {
+    "api/cron/varrer.ts": { "maxDuration": 300 }
+  },
   "rewrites": [
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
