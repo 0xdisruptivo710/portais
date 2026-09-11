@@ -1,276 +1,278 @@
-:root {
-  color-scheme: light;
-  --cor-fundo: #f5f6f8;
-  --cor-superficie: #ffffff;
-  --cor-texto: #1b1e24;
-  --cor-texto-suave: #5a6270;
-  --cor-borda: #d9dce2;
-  --cor-primaria: #3454d1;
-  --cor-primaria-texto: #ffffff;
-  --cor-perigo: #b3261e;
-  --cor-perigo-fundo: #fbeae8;
-  --cor-sucesso: #1b6f4c;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+ * Base do AIOS. Este painel roda embedado dentro da plataforma, então tudo
+ * aqui é a linguagem visual dela: fundo cinza claro, superfície branca,
+ * separação por borda (quase nenhuma sombra), indigo na ação, violeta na
+ * linha de prévia. O app não desenha cabeçalho nem barra superior: a
+ * plataforma já tem a dela, e duas barras empilhadas denunciam o embed.
+ * ------------------------------------------------------------------------- */
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  body {
+    @apply m-0 bg-aios-fundo font-sans text-[14px] leading-normal text-aios-texto antialiased;
+  }
+
+  /* Foco de teclado visível em tudo que é interativo, inclusive no que não é
+   * botão nativo (linha de lista, aba, célula clicável). */
+  :focus-visible {
+    outline: 2px solid theme(colors.aios.acao);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply m-0 font-semibold text-aios-texto;
+  }
+
+  p {
+    @apply m-0;
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    @apply w-full rounded-aios border border-aios-borda bg-white px-3 py-2 text-[14px] text-aios-texto shadow-none;
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]):hover,
+  select:hover,
+  textarea:hover {
+    @apply border-aios-texto-suave;
+  }
+
+  input[type="checkbox"] {
+    @apply h-4 w-4 shrink-0 cursor-pointer accent-aios-acao;
+  }
+
+  textarea {
+    @apply min-h-[88px] resize-y;
+  }
+
+  select {
+    @apply cursor-pointer;
+  }
+
+  /* Ninguém deve ver movimento que não pediu. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
 
-* {
-  box-sizing: border-box;
-}
+@layer components {
+  /* --- Casca do embed ---------------------------------------------------- */
 
-body {
-  margin: 0;
-  background: var(--cor-fundo);
-  color: var(--cor-texto);
-}
+  .conteudo {
+    @apply mx-auto flex w-full max-w-[1180px] flex-col gap-4 px-4 py-4 sm:px-6 sm:py-5;
+  }
 
-.app {
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-}
+  /* Abas em pílula, no padrão do AIOS: ativa é pílula preenchida indigo com
+   * texto branco; inativas são texto simples, sem fundo. */
+  .abas {
+    @apply flex flex-wrap items-center gap-1;
+  }
 
-.app-cabecalho {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 24px;
-  background: var(--cor-superficie);
-  border-bottom: 1px solid var(--cor-borda);
-  flex-wrap: wrap;
-}
+  .aba {
+    @apply inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[14px] font-medium text-aios-texto-suave no-underline transition-colors;
+  }
 
-.app-cabecalho h1 {
-  font-size: 18px;
-  margin: 0;
-}
+  .aba:hover {
+    @apply bg-white text-aios-texto;
+  }
 
-.app-cabecalho nav {
-  display: flex;
-  gap: 8px;
-}
+  .aba-ativa {
+    @apply bg-aios-acao text-white hover:bg-aios-acao-escura hover:text-white;
+  }
 
-.app-cabecalho nav a {
-  color: var(--cor-texto);
-  text-decoration: none;
-  padding: 6px 12px;
-  border-radius: 6px;
-  font-size: 14px;
-}
+  /* Selo numérico vermelho ao lado do rótulo, como no "Novos 37" deles. */
+  .aba-contagem {
+    @apply inline-flex min-w-[20px] items-center justify-center rounded-full bg-aios-alerta px-1.5 py-px text-[11px] font-semibold leading-5 text-white;
+  }
 
-.app-cabecalho nav a.active {
-  background: var(--cor-primaria);
-  color: var(--cor-primaria-texto);
-}
+  .aba-ativa .aba-contagem {
+    @apply bg-white text-aios-acao-escura;
+  }
 
-main {
-  padding: 24px;
-  flex: 1;
-}
+  /* --- Superfícies ------------------------------------------------------- */
 
-h1 {
-  margin-top: 0;
-}
+  .cartao {
+    @apply rounded-aios border border-aios-borda bg-white shadow-aios;
+  }
 
-table {
-  width: 100%;
-  border-collapse: collapse;
-  background: var(--cor-superficie);
-  border: 1px solid var(--cor-borda);
-}
+  .tela-topo {
+    @apply flex flex-col gap-1;
+  }
 
-th,
-td {
-  text-align: left;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--cor-borda);
-  font-size: 14px;
-}
+  .tela-descricao {
+    @apply max-w-[70ch] text-[13px] text-aios-texto-suave;
+  }
 
-th {
-  color: var(--cor-texto-suave);
-  font-weight: 600;
-}
+  /* --- Faixas ------------------------------------------------------------ */
 
-.filtros {
-  display: flex;
-  gap: 16px;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-}
+  .faixa-info {
+    @apply flex items-start gap-2 rounded-aios bg-aios-info px-3 py-2 text-[13px] font-medium text-white;
+  }
 
-.filtros label {
-  display: flex;
-  flex-direction: column;
-  font-size: 13px;
-  color: var(--cor-texto-suave);
-  gap: 4px;
-}
+  .faixa-atencao {
+    @apply flex items-start gap-2 rounded-aios bg-aios-atencao-fundo px-3 py-2 text-[13px] font-medium text-aios-atencao-texto;
+  }
 
-label {
-  font-size: 13px;
-  color: var(--cor-texto-suave);
-}
+  .faixa-erro {
+    @apply flex items-start gap-2 rounded-aios border border-red-200 bg-aios-erro-fundo px-3 py-2 text-[13px] font-medium text-aios-erro-texto;
+  }
 
-input,
-select,
-textarea {
-  padding: 8px;
-  border: 1px solid var(--cor-borda);
-  border-radius: 6px;
-  font: inherit;
-  color: var(--cor-texto);
-  background: var(--cor-superficie);
-}
+  .faixa-ok {
+    @apply flex items-start gap-2 rounded-aios border border-emerald-200 bg-aios-ok-fundo px-3 py-2 text-[13px] font-medium text-aios-ok-texto;
+  }
 
-button {
-  cursor: pointer;
-  border-radius: 6px;
-  border: 1px solid var(--cor-borda);
-  padding: 8px 14px;
-  background: var(--cor-superficie);
-  font: inherit;
-  color: var(--cor-texto);
-}
+  /* --- Selos ------------------------------------------------------------- */
 
-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
+  .selo {
+    @apply inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-aios-selo px-2.5 py-0.5 text-[12px] font-medium text-aios-selo-texto;
+  }
 
-button[type="submit"] {
-  background: var(--cor-primaria);
-  color: var(--cor-primaria-texto);
-  border-color: var(--cor-primaria);
-}
+  .selo-neutro {
+    @apply bg-aios-fundo text-aios-texto-suave;
+  }
 
-form div {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-bottom: 12px;
-}
+  .selo-ok {
+    @apply bg-aios-ok-fundo text-aios-ok-texto;
+  }
 
-.revisao-layout {
-  display: grid;
-  grid-template-columns: 260px 1fr;
-  gap: 24px;
-}
+  .selo-atencao {
+    @apply bg-aios-atencao-fundo text-aios-atencao-texto;
+  }
 
-.revisao-lista {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
+  .selo-erro {
+    @apply bg-aios-erro-fundo text-aios-erro-texto;
+  }
 
-.revisao-lista button {
-  width: 100%;
-  text-align: left;
-}
+  /* --- Botões ------------------------------------------------------------ */
 
-.revisao-lista button.selecionado {
-  border-color: var(--cor-primaria);
-  font-weight: 600;
-}
+  .botao {
+    @apply inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-aios border border-aios-borda bg-white px-3 py-1.5 text-[13px] font-medium text-aios-texto transition-colors;
+  }
 
-.revisao-detalhe {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 24px;
-}
+  .botao:hover:not(:disabled) {
+    @apply border-aios-texto-suave bg-aios-fundo;
+  }
 
-.revisao-email iframe {
-  width: 100%;
-  height: 480px;
-  border: 1px solid var(--cor-borda);
-  background: var(--cor-superficie);
-}
+  .botao:disabled {
+    @apply cursor-not-allowed opacity-50;
+  }
 
-.revisao-formulario {
-  display: flex;
-  flex-direction: column;
-}
+  .botao-primario {
+    @apply border-aios-acao bg-aios-acao text-white;
+  }
 
-[role="alert"] {
-  color: var(--cor-perigo);
-  background: var(--cor-perigo-fundo);
-  padding: 8px 12px;
-  border-radius: 6px;
-}
+  .botao-primario:hover:not(:disabled) {
+    @apply border-aios-acao-escura bg-aios-acao-escura text-white;
+  }
 
-[role="status"] {
-  color: var(--cor-sucesso);
-}
+  .botao-perigo {
+    @apply border-aios-alerta bg-aios-alerta text-white;
+  }
 
-.login {
-  max-width: 320px;
-  margin: 15vh auto;
-  padding: 0 16px;
-}
+  .botao-perigo:hover:not(:disabled) {
+    @apply border-red-600 bg-red-600 text-white;
+  }
 
-.login form {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-top: 16px;
-}
+  .botao-grande {
+    @apply px-4 py-2.5 text-[14px];
+  }
 
-.login label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
+  /* --- Formulário -------------------------------------------------------- */
 
-/* Confirmação do envio de um lead (src/components/BotaoEnviar.tsx). Ela vive
- * dentro da célula da tabela, então precisa de largura mínima própria: o
- * texto que vai sair tem que ser legível inteiro antes de o operador
- * confirmar, e não espremido em uma coluna estreita. */
-.envio-confirmacao {
-  min-width: 320px;
-  padding: 12px;
-  border: 1px solid var(--cor-primaria);
-  border-radius: 6px;
-  background: var(--cor-superficie);
-}
+  .campo {
+    @apply flex flex-col gap-1.5;
+  }
 
-.envio-confirmacao h3 {
-  margin: 0 0 8px;
-  font-size: 14px;
-}
+  .rotulo {
+    @apply text-[13px] font-medium text-aios-texto;
+  }
 
-.envio-confirmacao p {
-  margin: 0 0 8px;
-  font-size: 13px;
-}
+  .dica {
+    @apply text-[12px] text-aios-texto-suave;
+  }
 
-.envio-mensagem {
-  padding: 8px;
-  border-left: 3px solid var(--cor-borda);
-  background: var(--cor-fundo);
-  white-space: pre-wrap;
-}
+  /* --- Tabela ------------------------------------------------------------ */
 
-.envio-acoes {
-  display: flex;
-  gap: 8px;
-}
+  /* A tabela larga rola dentro do próprio container; a página nunca rola na
+   * horizontal. */
+  .tabela-rolagem {
+    @apply w-full overflow-x-auto rounded-aios border border-aios-borda bg-white;
+  }
 
-.envio-acoes button:first-child {
-  background: var(--cor-primaria);
-  color: var(--cor-primaria-texto);
-  border-color: var(--cor-primaria);
-}
+  /* Lista longa (354 leads): o corpo rola e o cabeçalho fica fixo, para o
+   * operador nunca perder de vista qual coluna é qual. */
+  .tabela-rolagem-longa {
+    @apply max-h-[70vh] overflow-auto;
+  }
 
-.envio-resultado p {
-  margin: 0 0 4px;
-  font-size: 13px;
-}
+  .tabela {
+    @apply w-full border-collapse text-[13px];
+  }
 
-/* A conferência de entrega é informação de rodapé, e não um carimbo de
- * sucesso: fica em tom suave para não ser lida como "entregue". */
-.envio-conferencia {
-  color: var(--cor-texto-suave);
+  .tabela th {
+    @apply whitespace-nowrap border-b border-aios-borda bg-white px-3 py-2 text-left font-semibold text-aios-texto-suave;
+  }
+
+  .tabela-rolagem-longa .tabela th {
+    @apply sticky top-0 z-10;
+  }
+
+  .tabela td {
+    @apply border-b border-aios-borda px-3 py-2 align-top text-aios-texto;
+  }
+
+  .tabela tbody tr:last-child td {
+    @apply border-b-0;
+  }
+
+  .tabela tbody tr:hover td {
+    @apply bg-aios-fundo/60;
+  }
+
+  .numero-coluna {
+    @apply text-right tabular-nums;
+  }
+
+  /* --- Estados ----------------------------------------------------------- */
+
+  .estado-vazio {
+    @apply flex flex-col items-center gap-1 rounded-aios border border-dashed border-aios-borda bg-white px-4 py-10 text-center;
+  }
+
+  .estado-vazio-titulo {
+    @apply text-[14px] font-semibold text-aios-texto;
+  }
+
+  .estado-vazio-texto {
+    @apply max-w-[46ch] text-[13px] text-aios-texto-suave;
+  }
+
+  .carregando {
+    @apply flex items-center gap-2 rounded-aios border border-aios-borda bg-white px-3 py-3 text-[13px] text-aios-texto-suave;
+  }
+
+  /* Linha de prévia dentro de um item de lista: violeta, não cinza. É o que
+   * dá o tom do sistema no AIOS. */
+  .previa-linha {
+    @apply text-[13px] font-medium text-aios-previa;
+  }
 }
