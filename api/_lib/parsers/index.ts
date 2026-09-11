@@ -3,5 +3,6 @@
 // parser de propósito — só mandam botão que exige login, e `processarEvento`
 // os trata como "lead sem dados" antes de chegar aqui.
 import "./webmotors.js";
+import "./chavesnamao.js";
 
 export { parserDoPortal, registrarParser, leadVazio, type Parser } from "./registro.js";
