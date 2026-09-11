@@ -116,8 +116,8 @@ export default function BotaoEnviar({ leadId, aoEnviar }: Props) {
 
   if (!previa) {
     return (
-      <div className="flex flex-col gap-1">
-        <button type="button" className="botao botao-primario" onClick={abrir} disabled={carregando}>
+      <div className="flex flex-col items-start gap-1">
+        <button type="button" className="botao botao-acao" onClick={abrir} disabled={carregando}>
           {carregando ? (
             <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
           ) : (

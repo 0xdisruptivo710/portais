@@ -30,6 +30,7 @@ const OPCOES_DIAS = [7, 30, 90];
 const LARGURA_SERIE = 320;
 const ALTURA_SERIE = 56;
 const RAIO_TOPO = 4;
+const LARGURA_MAXIMA_BARRA = 24;
 
 /**
  * As três métricas da spec (seção Números do design): leads por portal por
@@ -151,7 +152,7 @@ export default function Numeros() {
               <div className="tela-topo">
                 <h2 className="text-[14px]">Leads por dia</h2>
                 <p className="tela-descricao">
-                  A única parte da tela que muda com o período escolhido ao lado.
+                  A única parte da tela que muda com o período escolhido.
                 </p>
               </div>
 
@@ -295,7 +296,9 @@ function SerieDoPortal({
 }) {
   const fatia = LARGURA_SERIE / pontos.length;
   const respiro = pontos.length > 1 ? Math.min(2, fatia * 0.34) : 0;
-  const largura = Math.max(1, fatia - respiro);
+  // Marca fina: a barra nunca preenche a faixa do dia, e nunca passa de 24.
+  // Sem o teto, uma janela com um dia só viraria uma laje de ponta a ponta.
+  const largura = Math.min(LARGURA_MAXIMA_BARRA, Math.max(1, fatia - respiro));
   const pico = pontos.reduce((maior, p) => (p.total > maior ? p.total : maior), 0);
 
   const descricao =
@@ -334,7 +337,7 @@ function SerieDoPortal({
         {pontos.map((ponto, indice) => {
           if (ponto.total <= 0) return null;
           const altura = Math.max(2, (ponto.total / maximo) * ALTURA_SERIE);
-          const x = indice * fatia + respiro / 2;
+          const x = indice * fatia + (fatia - largura) / 2;
           return (
             <path
               key={ponto.dia}

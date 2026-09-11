@@ -204,7 +204,7 @@ export default function Config() {
         )}
       </div>
 
-      <form className="cartao flex flex-col gap-4 p-4" onSubmit={salvar}>
+      <form className="cartao flex max-w-[760px] flex-col gap-4 p-4" onSubmit={salvar}>
         <div className="campo">
           <label className="rotulo" htmlFor="config-boas-vindas">
             Texto de boas-vindas
@@ -227,6 +227,7 @@ export default function Config() {
             <input
               id="config-horario-inicio"
               type="time"
+              className="max-w-[160px]"
               value={horarioInicio}
               onChange={(e) => setHorarioInicio(e.target.value)}
             />
@@ -239,6 +240,7 @@ export default function Config() {
             <input
               id="config-horario-fim"
               type="time"
+              className="max-w-[160px]"
               value={horarioFim}
               onChange={(e) => setHorarioFim(e.target.value)}
             />
@@ -270,7 +272,12 @@ export default function Config() {
               <label className="rotulo text-aios-atencao-texto" htmlFor="config-confirma">
                 Frase de confirmação, digite {FRASE_CONFIRMACAO}
               </label>
-              <input id="config-confirma" value={frase} onChange={(e) => setFrase(e.target.value)} />
+              <input
+                id="config-confirma"
+                className="max-w-[280px]"
+                value={frase}
+                onChange={(e) => setFrase(e.target.value)}
+              />
             </div>
           )}
         </div>

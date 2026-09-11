@@ -101,12 +101,9 @@ export default function Revisao() {
     <section className="flex flex-col gap-4">
       <h1 className="sr-only">Revisão</h1>
 
-      <p className="faixa-info">
-        <Inbox aria-hidden="true" className="mt-px h-4 w-4 shrink-0" />
-        <span>
-          Leads que o parser ou a IA não conseguiram interpretar caem aqui, em vez de somem. Complete os
-          dados a partir do e-mail original para o lead seguir para a ativação.
-        </span>
+      <p className="tela-descricao">
+        Leads que o parser ou a IA não conseguiram interpretar caem aqui, em vez de somem. Complete os
+        dados a partir do e-mail original para o lead seguir para a ativação.
       </p>
 
       {erro && (
@@ -142,11 +139,7 @@ export default function Revisao() {
                 <button
                   type="button"
                   aria-current={item.id === selecionadoId ? "true" : undefined}
-                  className={
-                    item.id === selecionadoId
-                      ? "flex w-full flex-col gap-1 bg-aios-selo px-3 py-2.5 text-left"
-                      : "flex w-full flex-col gap-1 px-3 py-2.5 text-left hover:bg-aios-fundo"
-                  }
+                  className={item.id === selecionadoId ? "item-fila item-fila-ativo" : "item-fila"}
                   onClick={() => selecionar(item.id)}
                 >
                   <span className="selo self-start">{rotuloPortal(item.portal)}</span>

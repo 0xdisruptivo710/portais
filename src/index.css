@@ -184,6 +184,17 @@
     @apply border-aios-acao-escura bg-aios-acao-escura text-white;
   }
 
+  /* Ação de linha, repetida centenas de vezes na lista: carrega o indigo no
+   * texto, não no fundo. O preenchido fica reservado para a aba ativa e
+   * para a confirmação do envio, que são decisões, não navegação. */
+  .botao-acao {
+    @apply border-aios-borda bg-white px-2.5 py-1 text-aios-acao;
+  }
+
+  .botao-acao:hover:not(:disabled) {
+    @apply border-aios-acao bg-aios-selo text-aios-acao-escura;
+  }
+
   .botao-perigo {
     @apply border-aios-alerta bg-aios-alerta text-white;
   }
@@ -224,20 +235,26 @@
     @apply max-h-[70vh] overflow-auto;
   }
 
+  /* border-separate, e não collapse: com bordas colapsadas o fundo do
+   * cabeçalho fixo não cobre a linha que passa por baixo dele na rolagem. */
   .tabela {
-    @apply w-full border-collapse text-[13px];
+    @apply w-full border-separate border-spacing-0 text-[13px];
   }
 
   .tabela th {
     @apply whitespace-nowrap border-b border-aios-borda bg-white px-3 py-2 text-left font-semibold text-aios-texto-suave;
   }
 
+  /* A sombra é quase nada de propósito: serve só para a linha que passa por
+   * baixo do cabeçalho fixo ler como "rolou", e não como corte. */
   .tabela-rolagem-longa .tabela th {
-    @apply sticky top-0 z-10;
+    @apply sticky top-0 z-10 shadow-[0_2px_4px_-3px_rgb(17_24_39_/_0.18)];
   }
 
+  /* Sem cor de texto aqui de propósito: a célula herda a cor do corpo, e a
+   * linha de prévia em violeta continua valendo quando a célula pede. */
   .tabela td {
-    @apply border-b border-aios-borda px-3 py-2 align-top text-aios-texto;
+    @apply border-b border-aios-borda px-3 py-2 align-top;
   }
 
   .tabela tbody tr:last-child td {
@@ -248,7 +265,11 @@
     @apply bg-aios-fundo/60;
   }
 
-  .numero-coluna {
+  /* Coluna de número: alinhada à direita no cabeçalho e na célula, para o
+   * valor ficar embaixo do próprio rótulo. Precisa citar .tabela porque
+   * `.tabela th` já carrega um text-left mais específico. */
+  .tabela th.numero-coluna,
+  .tabela td.numero-coluna {
     @apply text-right tabular-nums;
   }
 
@@ -268,6 +289,26 @@
 
   .carregando {
     @apply flex items-center gap-2 rounded-aios border border-aios-borda bg-white px-3 py-3 text-[13px] text-aios-texto-suave;
+  }
+
+  /* --- Item de fila (lista da Revisão) ----------------------------------- */
+
+  .item-fila {
+    @apply flex w-full flex-col gap-1 border-l-[3px] border-transparent px-3 py-2.5 text-left transition-colors;
+  }
+
+  .item-fila:hover {
+    @apply bg-aios-fundo;
+  }
+
+  .item-fila-ativo {
+    @apply border-aios-acao bg-aios-selo hover:bg-aios-selo;
+  }
+
+  /* O selo de portal some quando o fundo do item selecionado é da mesma
+   * família: dentro do item ativo ele vira branco. */
+  .item-fila-ativo .selo {
+    @apply bg-white;
   }
 
   /* Linha de prévia dentro de um item de lista: violeta, não cinza. É o que
