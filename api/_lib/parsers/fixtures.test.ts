@@ -5,7 +5,7 @@ import { simpleParser } from "mailparser";
 import { describe, expect, it } from "vitest";
 import { paraEmailCru } from "../email.js";
 import { parserDoPortal } from "./index.js";
-import type { Portal } from "../../../src/tipos.js";
+import { PORTAIS_COM_DADOS, type Portal } from "../../../src/tipos.js";
 
 // `new URL("./fixtures", import.meta.url)` quebra aqui: o ambiente de teste é
 // jsdom (environment: "jsdom" no vitest.config.ts), então o `URL` global é o
@@ -28,6 +28,18 @@ describe("parsers contra e-mail real", () => {
   for (const portal of portais) {
     const dir = join(RAIZ, portal);
     const emls = readdirSync(dir).filter((f) => f.endsWith(".eml"));
+
+    // Há fixture de OLX e Mercado Livre, mas eles não têm parser de propósito:
+    // só mandam botão que exige login, e `processarEvento` corta antes de
+    // chamar parser. O fixture fica para provar que continua sendo assim.
+    if (!PORTAIS_COM_DADOS.includes(portal)) {
+      describe(portal, () => {
+        it("não tem parser, por decisão de projeto", () => {
+          expect(parserDoPortal(portal)).toBeNull();
+        });
+      });
+      continue;
+    }
 
     describe(portal, () => {
       it("tem parser registrado", () => {
