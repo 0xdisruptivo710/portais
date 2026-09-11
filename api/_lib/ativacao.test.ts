@@ -9,7 +9,7 @@ vi.stubGlobal("fetch", fetchMock);
 vi.mock("./supabase", () => ({ getSupabase: vi.fn() }));
 
 import { getSupabase } from "./supabase";
-const { decidirAcao, dentroDaJanela, ativarLead } = await import("./ativacao");
+const { decidirAcao, dentroDaJanela, ativarLead, ativarLeadDetalhado, previaDeEnvio } = await import("./ativacao");
 
 const DIA = { horarioInicio: "08:00", horarioFim: "20:00" };
 const base = { modo: "real" as const, suprimir: false, motivo: null, ...DIA };
@@ -97,12 +97,47 @@ describe("decidirAcao", () => {
   it("trata modo desconhecido como dry_run, nunca como real", () => {
     expect(decidirAcao({ ...base, modo: "qualquer-coisa" as never })).toBe("dry_run");
   });
+
+  // O botão do painel autoriza ESTE lead, sem mexer na config. Sem isso, o
+  // clique do operador cairia em dry_run e nada sairia — com a tela dizendo
+  // que deu certo.
+  it("autorizacao manual envia com a config ainda em dry_run", () => {
+    expect(
+      decidirAcao({
+        ...base,
+        modo: "dry_run",
+        autorizadoManualmente: true,
+        agora: new Date("2026-09-10T13:00:00-03:00"),
+      }),
+    ).toBe("enviar");
+  });
+
+  // Decisão explícita: o humano olhando para o lead é uma guarda mais forte
+  // que o relógio, e "adiar" não tem quem repesque no caminho manual.
+  it("autorizacao manual dispensa a janela de horario, em vez de adiar", () => {
+    expect(
+      decidirAcao({
+        ...base,
+        modo: "dry_run",
+        autorizadoManualmente: true,
+        agora: new Date("2026-09-10T21:30:00-03:00"),
+      }),
+    ).toBe("enviar");
+  });
+
+  // A supressão é a única guarda que o botão NÃO pode contornar.
+  it("supressao vence a autorizacao manual", () => {
+    expect(
+      decidirAcao({ ...base, suprimir: true, motivo: "kill-switch ligado", autorizadoManualmente: true }),
+    ).toBe("suprimido");
+  });
 });
 
 const LEAD_BASE = {
   id: 1,
   cliente_slug: "malentachi",
   telefone_e164: "5515991280217",
+  telefone_exibicao: "+55 (15) 99128-0217",
   nome: "Fulano da Silva",
   veiculo_texto: "Civic 2020",
   portal: "webmotors",
@@ -145,6 +180,9 @@ function construirFrom(estado: EstadoAtivacao) {
   const chamadasInsertAtivacao: Record<string, unknown>[] = [];
   const chamadasUpdateAtivacao: Record<string, unknown>[] = [];
   const chamadasUpdateLead: Record<string, unknown>[] = [];
+  // O botão de envio manual não pode mexer na config do cliente: qualquer
+  // escrita em portais_config aparece aqui e derruba o teste.
+  const chamadasUpdateConfig: Record<string, unknown>[] = [];
   // Ordem observável dos dois updates do ramo "enviar": precisa ser
   // ["lead", "ativacao"], nunca o contrário — é o que a correção garante.
   const ordemUpdates: string[] = [];
@@ -198,6 +236,10 @@ function construirFrom(estado: EstadoAtivacao) {
             single: vi.fn(async () => ({ data: cfg, error: null })),
           })),
         })),
+        update: vi.fn((payload: Record<string, unknown>) => {
+          chamadasUpdateConfig.push(payload);
+          return { eq: vi.fn(() => ({ select: vi.fn(async () => ({ data: [cfg], error: null })) })) };
+        }),
       };
     }
     if (tabela === "portais_ativacoes") {
@@ -221,6 +263,7 @@ function construirFrom(estado: EstadoAtivacao) {
     chamadasInsertAtivacao,
     chamadasUpdateAtivacao,
     chamadasUpdateLead,
+    chamadasUpdateConfig,
     ordemUpdates,
     get chamadasSelectAnteriores() {
       return chamadasSelectAnteriores;
@@ -471,5 +514,276 @@ describe("ativarLead", () => {
     const chamada = chamadasUpdateLead.find((c) => c.status_ativacao === "suprimido");
     expect(chamada).toBeDefined();
     expect(chamada?.motivo_supressao).toBe("texto de boas-vindas vazio");
+  });
+});
+
+/**
+ * Roteia o mock de fetch por URL: o envio e a conferência de status são duas
+ * chamadas diferentes na mesma função, e contá-las juntas esconderia
+ * justamente o que importa aqui (um envio, nunca dois).
+ */
+function mockarFetchWts(statusDaMensagem: unknown = { status: "DELIVERED" }) {
+  fetchMock.mockImplementation(async (url: unknown) => {
+    const alvo = String(url);
+    if (alvo.endsWith("/chat/v1/message/send")) {
+      return { ok: true, text: async () => JSON.stringify({ id: "msg-1", status: "QUEUED" }) };
+    }
+    if (alvo.endsWith("/status")) {
+      return { ok: true, text: async () => JSON.stringify(statusDaMensagem) };
+    }
+    throw new Error(`url inesperada no mock: ${alvo}`);
+  });
+}
+
+function chamadasDeEnvio(): unknown[] {
+  return fetchMock.mock.calls.filter((c) => String(c[0]).endsWith("/chat/v1/message/send"));
+}
+
+function chamadasDeStatus(): unknown[] {
+  return fetchMock.mock.calls.filter((c) => String(c[0]).endsWith("/status"));
+}
+
+const MANUAL = { autorizadoManualmente: true };
+
+describe("ativarLeadDetalhado com autorizacao manual (botao do painel)", () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.mocked(getSupabase).mockReset();
+    process.env.WTS_TOKEN = "token-de-teste";
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    delete process.env.WTS_TOKEN;
+  });
+
+  it("envia com a config ainda em dry_run, e NAO escreve em portais_config", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
+    mockarFetchWts();
+    const { chamadasUpdateLead, chamadasUpdateConfig } = mockarSupabase({
+      cfg: { ...CFG_BASE, modo_envio: "dry_run" },
+    });
+
+    const resultado = await ativarLeadDetalhado(1, MANUAL);
+
+    expect(resultado.acao).toBe("enviar");
+    expect(chamadasDeEnvio()).toHaveLength(1);
+    expect(chamadasUpdateLead.find((c) => c.status_ativacao === "enviado")).toBeDefined();
+    // O botão é autorização de um envio, não uma troca de configuração.
+    expect(chamadasUpdateConfig).toHaveLength(0);
+  });
+
+  it("grava enviado_em no lead e a resposta do WTS na linha de auditoria", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
+    mockarFetchWts();
+    const { chamadasUpdateLead, chamadasUpdateAtivacao } = mockarSupabase({
+      cfg: { ...CFG_BASE, modo_envio: "dry_run" },
+    });
+
+    const resultado = await ativarLeadDetalhado(1, MANUAL);
+
+    const gravacaoLead = chamadasUpdateLead.find((c) => c.status_ativacao === "enviado");
+    expect(gravacaoLead?.enviado_em).toBe(new Date("2026-09-10T13:00:00-03:00").toISOString());
+    expect(chamadasUpdateAtivacao).toHaveLength(1);
+    expect(chamadasUpdateAtivacao[0].resposta_wts).toEqual({ id: "msg-1", status: "QUEUED" });
+    expect(resultado.respostaWts).toEqual({ id: "msg-1", status: "QUEUED" });
+  });
+
+  // Decisão do botão: a autorização humana dispensa a janela de horário. O
+  // preço disso é o registro ter que dizer, sem ambiguidade, que foi envio
+  // manual fora do horário combinado.
+  it("fora da janela de horario ainda envia, e a auditoria registra modo manual_fora_janela", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T21:30:00-03:00"));
+    mockarFetchWts();
+    const { chamadasInsertAtivacao } = mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "dry_run" } });
+
+    const resultado = await ativarLeadDetalhado(1, MANUAL);
+
+    expect(resultado.acao).toBe("enviar");
+    expect(chamadasDeEnvio()).toHaveLength(1);
+    expect(chamadasInsertAtivacao[0].modo).toBe("manual_fora_janela");
+  });
+
+  it("dentro da janela a auditoria registra modo manual", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
+    mockarFetchWts();
+    const { chamadasInsertAtivacao } = mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "dry_run" } });
+
+    await ativarLeadDetalhado(1, MANUAL);
+
+    expect(chamadasInsertAtivacao[0].modo).toBe("manual");
+  });
+
+  it("kill-switch ligado: suprimido com motivo, a rede NUNCA e tocada", async () => {
+    const { chamadasUpdateLead } = mockarSupabase({ cfg: { ...CFG_BASE, kill_switch: true } });
+
+    const resultado = await ativarLeadDetalhado(1, MANUAL);
+
+    expect(resultado.acao).toBe("suprimido");
+    expect(resultado.motivo).toBe("kill-switch ligado");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(chamadasUpdateLead.find((c) => c.status_ativacao === "suprimido")).toBeDefined();
+  });
+
+  it("lead sem telefone: suprimido com motivo, a rede NUNCA e tocada", async () => {
+    mockarSupabase({ lead: { ...LEAD_BASE, telefone_e164: null, telefone_exibicao: null } });
+
+    const resultado = await ativarLeadDetalhado(1, MANUAL);
+
+    expect(resultado.acao).toBe("suprimido");
+    expect(resultado.motivo).toBe("sem telefone normalizavel");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("telefone contatado dentro da janela de supressao: suprimido, a rede NUNCA e tocada", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
+    mockarSupabase({ anteriores: [{ enviado_em: "2026-09-07T13:00:00-03:00" }] });
+
+    const resultado = await ativarLeadDetalhado(1, MANUAL);
+
+    expect(resultado.acao).toBe("suprimido");
+    expect(resultado.motivo).toBe("contatado ha 3d, janela de 30d");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("confere a entrega uma vez e grava verificado/verificacao_detalhe", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
+    mockarFetchWts({ status: "DELIVERED" });
+    const { chamadasUpdateAtivacao } = mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "dry_run" } });
+
+    const resultado = await ativarLeadDetalhado(1, MANUAL);
+
+    expect(chamadasDeStatus()).toHaveLength(1);
+    expect(resultado.verificado).toBe(true);
+    expect(chamadasUpdateAtivacao[0].verificado).toBe(true);
+    expect(String(chamadasUpdateAtivacao[0].verificacao_detalhe)).toContain("DELIVERED");
+  });
+
+  // A cicatriz conhecida: o WTS responde QUEUED em mensagem que nunca chega.
+  // QUEUED não pode virar "entregue" em lugar nenhum do sistema.
+  it("status QUEUED na conferencia NAO vira entrega confirmada", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
+    mockarFetchWts({ status: "QUEUED" });
+    const { chamadasUpdateAtivacao } = mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "dry_run" } });
+
+    const resultado = await ativarLeadDetalhado(1, MANUAL);
+
+    expect(resultado.acao).toBe("enviar");
+    expect(resultado.verificado).toBe(false);
+    expect(chamadasUpdateAtivacao[0].verificado).toBe(false);
+    expect(String(chamadasUpdateAtivacao[0].verificacao_detalhe)).toContain("QUEUED");
+  });
+
+  it("falha na conferencia nao derruba o envio: verificado fica false com o motivo", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
+    fetchMock.mockImplementation(async (url: unknown) => {
+      const alvo = String(url);
+      if (alvo.endsWith("/chat/v1/message/send")) {
+        return { ok: true, text: async () => JSON.stringify({ id: "msg-1" }) };
+      }
+      return { ok: false, status: 404, text: async () => "nao encontrada" };
+    });
+    const { chamadasUpdateLead } = mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "dry_run" } });
+
+    const resultado = await ativarLeadDetalhado(1, MANUAL);
+
+    expect(resultado.acao).toBe("enviar");
+    expect(resultado.verificado).toBe(false);
+    expect(resultado.verificacaoDetalhe).toContain("404");
+    expect(chamadasUpdateLead.find((c) => c.status_ativacao === "enviado")).toBeDefined();
+  });
+
+  it("resposta de envio sem id: registra honestamente que nao deu para conferir", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
+    fetchMock.mockResolvedValue({ ok: true, text: async () => JSON.stringify({ status: "QUEUED" }) });
+    mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "dry_run" } });
+
+    const resultado = await ativarLeadDetalhado(1, MANUAL);
+
+    expect(chamadasDeStatus()).toHaveLength(0);
+    expect(resultado.verificado).toBe(false);
+    expect(resultado.verificacaoDetalhe).toContain("id");
+  });
+
+  // O caminho do cron continua com uma chamada de rede só. Conferir status em
+  // lote é outra decisão (custo por lead dentro dos 300s da function), e o
+  // registro não pode mentir dizendo que conferiu.
+  it("envio automatico em modo real nao consulta status e registra que nao conferiu", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
+    mockarFetchWts();
+    const { chamadasUpdateAtivacao } = mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "real" } });
+
+    await ativarLead(1);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(chamadasDeStatus()).toHaveLength(0);
+    expect(chamadasUpdateAtivacao[0].verificado).toBe(false);
+    expect(String(chamadasUpdateAtivacao[0].verificacao_detalhe)).toContain("automatico");
+  });
+});
+
+describe("previaDeEnvio", () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.mocked(getSupabase).mockReset();
+  });
+
+  afterEach(() => vi.useRealTimers());
+
+  it("devolve o texto montado e o destino, sem tocar a rede", async () => {
+    mockarSupabase();
+
+    const previa = await previaDeEnvio(1);
+
+    expect(previa.texto).toContain("Fulano");
+    expect(previa.texto).toContain("Civic 2020");
+    expect(previa.telefoneExibicao).toBe("+55 (15) 99128-0217");
+    expect(previa.para).toBe("+55|15991280217");
+    expect(previa.bloqueado).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("avisa que o telefone ja recebeu mensagem, com ha quantos dias", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
+    mockarSupabase({ anteriores: [{ enviado_em: "2026-09-07T13:00:00-03:00" }] });
+
+    const previa = await previaDeEnvio(1);
+
+    expect(previa.diasDesdeUltimoContato).toBe(3);
+    expect(previa.ultimoContatoEm).toBe(new Date("2026-09-07T13:00:00-03:00").toISOString());
+  });
+
+  // O aviso de reincidência tem que aparecer mesmo quando a janela de
+  // supressão já passou: o envio é liberado, mas a pessoa já foi abordada.
+  it("mostra o contato anterior mesmo fora da janela de supressao, sem bloquear", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
+    mockarSupabase({ anteriores: [{ enviado_em: "2026-07-01T13:00:00-03:00" }] });
+
+    const previa = await previaDeEnvio(1);
+
+    expect(previa.bloqueado).toBe(false);
+    expect(previa.diasDesdeUltimoContato).toBe(71);
+  });
+
+  it("lead sem telefone: bloqueado com o motivo, e sem destino", async () => {
+    mockarSupabase({ lead: { ...LEAD_BASE, telefone_e164: null, telefone_exibicao: null } });
+
+    const previa = await previaDeEnvio(1);
+
+    expect(previa.bloqueado).toBe(true);
+    expect(previa.motivo).toBe("sem telefone normalizavel");
+    expect(previa.para).toBeNull();
   });
 });

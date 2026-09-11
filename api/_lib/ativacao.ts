@@ -10,6 +10,48 @@ export interface Janela {
   horarioFim: string;
 }
 
+export interface OpcoesAtivacao {
+  /**
+   * Autorização humana explícita para ESTE lead, vinda do botão do painel.
+   *
+   * Vale só nesta chamada: não toca em portais_config, e o `modo_envio` do
+   * cliente continua exatamente como estava depois do envio. Todas as demais
+   * guardas continuam valendo, em especial a supressão, que não pode ser
+   * contornada por botão.
+   *
+   * Também é o que liga a conferência de entrega pós-envio: é o caminho em
+   * que existe um humano esperando a resposta na tela.
+   */
+  autorizadoManualmente?: boolean;
+}
+
+export interface ResultadoAtivacao {
+  acao: Acao;
+  /** Motivo da supressão, em texto legível. null quando nada bloqueou. */
+  motivo: string | null;
+  /** O que o WTS devolveu no POST de envio. null quando nada foi enviado. */
+  respostaWts: unknown;
+  /**
+   * Só é true quando a conferência posterior provou a entrega. O retorno do
+   * POST de envio NUNCA basta para isso.
+   */
+  verificado: boolean;
+  verificacaoDetalhe: string | null;
+}
+
+/** O que a tela mostra ao operador ANTES de ele confirmar o envio. */
+export interface PreviaEnvio {
+  /** O texto exato que sairá, já com nome, veículo e portal substituídos. */
+  texto: string;
+  telefoneExibicao: string | null;
+  /** Destino no formato que vai no payload do WTS (+55|DDDNUMERO). */
+  para: string | null;
+  bloqueado: boolean;
+  motivo: string | null;
+  ultimoContatoEm: string | null;
+  diasDesdeUltimoContato: number | null;
+}
+
 /**
  * A hora é lida sempre em São Paulo, nunca no fuso do servidor. A Vercel roda
  * em UTC: sem isso, "20h" viraria 17h local e a janela deixaria passar envio
@@ -41,16 +83,70 @@ export function dentroDaJanela(agora: Date, j: Janela): boolean {
  * às 3h da manhã é inofensivo e útil para conferência.
  */
 export function decidirAcao(
-  a: { modo: ModoEnvio; suprimir: boolean; motivo: string | null; agora?: Date } & Janela,
+  a: {
+    modo: ModoEnvio;
+    suprimir: boolean;
+    motivo: string | null;
+    agora?: Date;
+    autorizadoManualmente?: boolean;
+  } & Janela,
 ): Acao {
   if (a.suprimir) return "suprimido";
+
+  // A autorização manual vem DEPOIS da supressão e ANTES de tudo mais. Ela
+  // vale mais que o modo da config (é o botão que autoriza aquele envio, não
+  // a config) e dispensa a janela de horário: quem clica está olhando para o
+  // lead, e isso é uma guarda mais forte que o relógio. "adiar" também não
+  // teria sentido aqui — nada repescaria a autorização manual depois (a fila
+  // só devolve lead 'pendente' ao cron, que em dry_run marcaria o lead como
+  // simulado e perderia a intenção do operador em silêncio). O preço dessa
+  // decisão é o registro: um envio manual fora do horário combinado é
+  // gravado em portais_ativacoes com o modo dizendo exatamente isso.
+  if (a.autorizadoManualmente) return "enviar";
+
   if (a.modo !== "real") return "dry_run";
   return dentroDaJanela(a.agora ?? new Date(), a) ? "enviar" : "adiar";
 }
 
-export async function ativarLead(leadId: number): Promise<Acao> {
-  const sb = getSupabase();
+interface LeadBanco {
+  id: number;
+  cliente_slug: string;
+  telefone_e164: string | null;
+  telefone_exibicao: string | null;
+  nome: string | null;
+  veiculo_texto: string | null;
+  portal: string;
+}
 
+interface ConfigBanco {
+  texto_boas_vindas: string;
+  wts_from: string | null;
+  janela_supressao_dias: number;
+  horario_inicio: string;
+  horario_fim: string;
+  modo_envio: ModoEnvio;
+  kill_switch: boolean;
+}
+
+interface Preparo {
+  lead: LeadBanco;
+  cfg: ConfigBanco;
+  texto: string;
+  suprimir: boolean;
+  motivo: string | null;
+  payload: ReturnType<typeof montarEnvio> | null;
+  ultimoContatoEm: Date | null;
+}
+
+/**
+ * Tudo o que antecede a decisão de enviar: lê lead e config, monta o texto e
+ * roda a cadeia de guardas. Nenhuma linha daqui toca a rede nem grava nada,
+ * e é por isso que a prévia da tela (previaDeEnvio) e o envio de verdade
+ * (ativarLeadDetalhado) podem compartilhar exatamente este código — o
+ * operador confirma o mesmo texto que vai sair, não uma aproximação montada
+ * do lado do navegador.
+ */
+async function prepararEnvio(sb: ReturnType<typeof getSupabase>, leadId: number): Promise<Preparo> {
   const { data: lead, error } = await sb
     .from("portais_leads")
     .select("*")
@@ -82,6 +178,7 @@ export async function ativarLead(leadId: number): Promise<Acao> {
   // função precisar ficar assim.
   let suprimir: boolean;
   let motivo: string | null;
+  let ultimoContatoEm: Date | null = null;
   if (!lead.telefone_e164) {
     // Normalizador (telefone.ts) devolve null de propósito quando o número é
     // ambíguo, em vez de adivinhar. Essa checagem tem que vir ANTES da busca
@@ -112,25 +209,88 @@ export async function ativarLead(leadId: number): Promise<Acao> {
       .order("enviado_em", { ascending: false })
       .limit(1);
 
+    ultimoContatoEm = anteriores?.[0]?.enviado_em ? new Date(anteriores[0].enviado_em) : null;
+
     ({ suprimir, motivo } = decidirSupressao({
-      ultimoContatoEm: anteriores?.[0]?.enviado_em ? new Date(anteriores[0].enviado_em) : null,
+      ultimoContatoEm,
       janelaDias: cfg.janela_supressao_dias,
       agora: new Date(),
       killSwitch: cfg.kill_switch,
     }));
   }
 
+  const payload = lead.telefone_e164
+    ? montarEnvio({ texto, from: cfg.wts_from ?? "", e164: lead.telefone_e164 })
+    : null;
+
+  return { lead, cfg, texto, suprimir, motivo, payload, ultimoContatoEm };
+}
+
+/**
+ * O que a tela mostra antes de o operador confirmar. Sai da MESMA preparação
+ * do envio: se a prévia diz que o texto é X, é X que sai.
+ *
+ * `ultimoContatoEm` vem preenchido mesmo quando a janela de supressão já
+ * passou e o envio está liberado — o operador precisa saber que aquela
+ * pessoa já foi abordada antes de abordar de novo, e isso não é a mesma
+ * pergunta que "o sistema vai bloquear".
+ */
+export async function previaDeEnvio(leadId: number): Promise<PreviaEnvio> {
+  const p = await prepararEnvio(getSupabase(), leadId);
+  return {
+    texto: p.texto,
+    telefoneExibicao: p.lead.telefone_exibicao ?? null,
+    para: p.payload?.to ?? null,
+    bloqueado: p.suprimir,
+    motivo: p.motivo,
+    ultimoContatoEm: p.ultimoContatoEm?.toISOString() ?? null,
+    diasDesdeUltimoContato: p.ultimoContatoEm
+      ? Math.floor((Date.now() - p.ultimoContatoEm.getTime()) / 86_400_000)
+      : null,
+  };
+}
+
+/**
+ * Assinatura preservada para quem só precisa da decisão: a fila (fila.ts)
+ * chama assim, lead a lead, e os 300s da function não comportam mais que
+ * isso. Quem precisa contar a verdade ao operador na tela usa
+ * ativarLeadDetalhado.
+ */
+export async function ativarLead(leadId: number, opcoes: OpcoesAtivacao = {}): Promise<Acao> {
+  return (await ativarLeadDetalhado(leadId, opcoes)).acao;
+}
+
+export async function ativarLeadDetalhado(
+  leadId: number,
+  opcoes: OpcoesAtivacao = {},
+): Promise<ResultadoAtivacao> {
+  const sb = getSupabase();
+  const manual = opcoes.autorizadoManualmente === true;
+
+  const { lead, cfg, suprimir, motivo, payload } = await prepararEnvio(sb, leadId);
+
+  const janela = { horarioInicio: cfg.horario_inicio, horarioFim: cfg.horario_fim };
+  const agora = new Date();
+
   const acao = decidirAcao({
     modo: cfg.modo_envio,
     suprimir,
     motivo,
-    horarioInicio: cfg.horario_inicio,
-    horarioFim: cfg.horario_fim,
+    autorizadoManualmente: manual,
+    agora,
+    ...janela,
   });
 
-  const payload = lead.telefone_e164
-    ? montarEnvio({ texto, from: cfg.wts_from ?? "", e164: lead.telefone_e164 })
-    : null;
+  // `modo` na auditoria descreve COMO a ativação foi decidida, e não o que
+  // estava na config: uma linha com modo 'dry_run' e resposta_wts preenchida
+  // seria uma contradição para quem for ler isso depois. Envio autorizado no
+  // botão é gravado como manual, e o valor carrega, no próprio nome, a
+  // informação de que a janela de horário foi dispensada.
+  const modoRegistrado = !manual
+    ? cfg.modo_envio
+    : dentroDaJanela(agora, janela)
+      ? "manual"
+      : "manual_fora_janela";
 
   // A linha de auditoria é gravada SEMPRE, inclusive quando nada sai. É ela
   // que responde depois "por que esse lead não recebeu mensagem".
@@ -138,7 +298,7 @@ export async function ativarLead(leadId: number): Promise<Acao> {
     .from("portais_ativacoes")
     .insert({
       lead_id: leadId,
-      modo: cfg.modo_envio,
+      modo: modoRegistrado,
       payload_enviado: payload,
       erro: acao === "suprimido" ? motivo : acao === "adiar" ? "fora da janela" : null,
     })
@@ -148,13 +308,22 @@ export async function ativarLead(leadId: number): Promise<Acao> {
     throw new Error("insert em portais_ativacoes nao devolveu linha");
   }
 
+  const semEnvio = (decidida: Acao): ResultadoAtivacao => ({
+    acao: decidida,
+    motivo:
+      decidida === "suprimido" ? motivo : decidida === "adiar" ? "fora da janela de horario" : null,
+    respostaWts: null,
+    verificado: false,
+    verificacaoDetalhe: null,
+  });
+
   if (acao === "adiar") {
     // Fora da janela: o lead PERMANECE "pendente" — não gravamos nada aqui —
     // para que a próxima execução do cron dentro do horário repesque este
     // mesmo id via ativarPendentes (fila.ts só seleciona status_ativacao =
     // 'pendente'). A linha de auditoria acima já registra a tentativa adiada
     // com o motivo "fora da janela".
-    return acao;
+    return semEnvio(acao);
   }
 
   if (acao !== "enviar") {
@@ -162,10 +331,11 @@ export async function ativarLead(leadId: number): Promise<Acao> {
       status_ativacao: acao === "suprimido" ? "suprimido" : "dry_run",
       motivo_supressao: acao === "suprimido" ? motivo : null,
     });
-    return acao;
+    return semEnvio(acao);
   }
 
-  // Daqui para baixo só roda com modo_envio = 'real'.
+  // Daqui para baixo só roda com modo_envio = 'real' ou com autorização
+  // manual explícita para este lead.
   const resposta = await wtsRequest("POST", "/chat/v1/message/send", payload);
 
   // TODO: entre o envio acima e a gravação abaixo ainda existe uma janela em
@@ -184,20 +354,104 @@ export async function ativarLead(leadId: number): Promise<Acao> {
   // envio invisível que a próxima rodada repete para o mesmo cliente.
   await atualizarLinha(sb, "portais_leads", leadId, {
     status_ativacao: "enviado",
-    enviado_em: new Date().toISOString(),
+    enviado_em: agora.toISOString(),
   });
+
+  const verificacao = manual
+    ? await conferirEntrega(resposta)
+    : // O caminho do cron fica com uma chamada de rede por lead. Conferir
+      // status em lote é outra decisão (um GET a mais por lead dentro dos
+      // 300s da function) e cabe ao operador tomar. O que não pode é o
+      // registro mentir dizendo que conferiu.
+      { verificado: false, detalhe: "envio automatico: conferencia de entrega nao executada" };
 
   // Falha aqui não pode abortar a função: o estado crítico acima já foi
   // gravado, e lançar depois dele só escureceria um envio que já deu certo
   // (a próxima leitura veria o lead sem "enviado" e repetiria a mensagem).
   // console.warn preserva o rastro pra auditoria manual, sem propagar.
   try {
-    await atualizarLinha(sb, "portais_ativacoes", ativacao[0].id, { resposta_wts: resposta });
+    await atualizarLinha(sb, "portais_ativacoes", ativacao[0].id, {
+      resposta_wts: resposta,
+      verificado: verificacao.verificado,
+      verificacao_detalhe: verificacao.detalhe,
+    });
   } catch (e) {
     console.warn(`ativacao ${ativacao[0].id}: falha ao gravar resposta_wts`, e);
   }
 
-  return "enviar";
+  return {
+    acao: "enviar",
+    motivo: null,
+    respostaWts: resposta,
+    verificado: verificacao.verificado,
+    verificacaoDetalhe: verificacao.detalhe,
+  };
+}
+
+/**
+ * Só estes dois provam que a mensagem chegou ao destinatário. QUEUED e SENT
+ * dizem apenas que ela entrou ou saiu do gateway do WTS — é exatamente esse
+ * o retorno que já apareceu em mensagem que nunca chegou a ninguém. Tratar
+ * QUEUED como entrega é a cicatriz que esta função existe para não repetir.
+ */
+const STATUS_ENTREGUE = new Set(["DELIVERED", "READ"]);
+
+/**
+ * Uma tentativa, nunca mais que uma, e fail-open: se não der para conferir,
+ * o resultado é "não verificado" com o motivo por escrito. Nada aqui pode
+ * derrubar um envio que já saiu, e nada aqui pode afirmar entrega sem prova.
+ *
+ * Vale lembrar de quem lê o registro depois: esta consulta acontece segundos
+ * após o envio, então o normal é ela pegar a mensagem ainda em QUEUED ou
+ * SENT. "verificado = false" aqui quer dizer "não foi possível provar agora",
+ * e não "não chegou".
+ */
+async function conferirEntrega(resposta: unknown): Promise<{ verificado: boolean; detalhe: string }> {
+  const id = idDaMensagem(resposta);
+  if (!id) {
+    return {
+      verificado: false,
+      detalhe: "resposta do envio nao trouxe id da mensagem: entrega nao verificada",
+    };
+  }
+
+  try {
+    const status = await wtsRequest("GET", `/chat/v1/message/${encodeURIComponent(id)}/status`);
+    const valor = campoTexto(status, "status");
+    if (!valor) {
+      return {
+        verificado: false,
+        detalhe: `consulta de status sem campo status (id ${id}): entrega nao verificada`,
+      };
+    }
+    if (STATUS_ENTREGUE.has(valor.toUpperCase())) {
+      return { verificado: true, detalhe: `status ${valor} confirmado na consulta (id ${id})` };
+    }
+    return {
+      verificado: false,
+      detalhe: `status ${valor} (id ${id}): saiu do gateway, entrega ao destinatario nao comprovada`,
+    };
+  } catch (e) {
+    return {
+      verificado: false,
+      detalhe: `falha ao consultar o status (id ${id}): ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+}
+
+/**
+ * O contrato do corpo de resposta do envio não está documentado do lado do
+ * WTS, então a leitura é defensiva: sem id não há o que consultar, e isso é
+ * registrado como "não verificado" em vez de virar exceção.
+ */
+function idDaMensagem(resposta: unknown): string | null {
+  return campoTexto(resposta, "id") ?? campoTexto(resposta, "messageId");
+}
+
+function campoTexto(valor: unknown, campo: string): string | null {
+  if (typeof valor !== "object" || valor === null) return null;
+  const conteudo = (valor as Record<string, unknown>)[campo];
+  return typeof conteudo === "string" && conteudo.trim().length > 0 ? conteudo : null;
 }
 
 /**
