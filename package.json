@@ -10,8 +10,10 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "varrer": "node --experimental-strip-types --env-file=../../clientes/malentachi-veículos/.env scripts/varrer.ts",
-    "diagnostico-wts": "node --experimental-strip-types --env-file=../../clientes/malentachi-veículos/.env scripts/diagnostico-wts.ts"
+    "prevarrer": "tsc -p tsconfig.run.json",
+    "varrer": "node --env-file=../../clientes/malentachi-veículos/.env .run/scripts/varrer.js",
+    "prediagnostico-wts": "tsc -p tsconfig.run.json",
+    "diagnostico-wts": "node --env-file=../../clientes/malentachi-veículos/.env .run/scripts/diagnostico-wts.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.101.1",

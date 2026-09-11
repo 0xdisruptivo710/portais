@@ -15,6 +15,11 @@ const TETO_INTERPRETACAO = 10_000;
 
 const dias = Number(process.argv.find((a) => a.startsWith("--dias="))?.split("=")[1] ?? 90);
 const salvarFixtures = process.argv.includes("--fixtures");
+// Backfill longo: ingerir sem interpretar. Sem parser deterministico, cada
+// e-mail cai no fallback de IA e o teto diario corta no meio, jogando o resto
+// na fila de revisao sem necessidade. Ingere agora, interpreta depois que os
+// parsers existirem — de graca e com confianca alta.
+const soIngerir = process.argv.includes("--so-ingerir");
 const contaId = Number(process.env.PORTAIS_CONTA_ID ?? 1);
 
 const desde = new Date(Date.now() - dias * 24 * 60 * 60 * 1000);
@@ -90,5 +95,9 @@ console.log("por portal:", contagem);
 // Ingerir só grava o e-mail cru. Sem este passo, o backfill de 90 dias
 // terminaria com portais_eventos_raw cheia e portais_leads vazia — e é a
 // contagem por portal em cima dos leads que a cliente vai conferir.
-const fila = await interpretarPendentes({ teto: TETO_INTERPRETACAO });
-console.log("interpretados:", fila.processado, "| falharam:", fila.falha);
+if (soIngerir) {
+  console.log("--so-ingerir: eventos gravados crus, nada interpretado.");
+} else {
+  const fila = await interpretarPendentes({ teto: TETO_INTERPRETACAO });
+  console.log("interpretados:", fila.processado, "| falharam:", fila.falha);
+}

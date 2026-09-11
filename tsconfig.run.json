@@ -1,0 +1,32 @@
+{
+  /*
+   * Usado só para RODAR os scripts locais (varrer, diagnostico-wts), nunca em build.
+   *
+   * Por que existe: os módulos de api/ importam uns aos outros com extensão .js,
+   * que é obrigatória para o ESM funcionar na Vercel. O Node rodando .ts com
+   * --experimental-strip-types não faz o remapeamento .js -> .ts do TypeScript,
+   * então procura um imap.js literal e falha. Compilar antes de rodar resolve:
+   * o .js emitido passa a existir de verdade.
+   *
+   * Diferente dos outros tsconfigs, este EMITE. E exclui os testes, que puxam
+   * vitest e não têm o que fazer aqui.
+   */
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "strictNullChecks": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noEmit": false,
+    "outDir": ".run",
+    "rootDir": ".",
+    "types": ["node"]
+  },
+  "include": ["scripts", "api/_lib"],
+  "exclude": ["**/*.test.ts", "**/*.spec.ts"]
+}

@@ -11,3 +11,5 @@ api/_lib/parsers/fixtures/**/*.eml
 
 .vercel
 .env*
+.run
+api/_lib/parsers/fixtures/**/*.esperado.json
