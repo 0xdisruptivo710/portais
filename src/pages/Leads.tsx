@@ -147,7 +147,7 @@ export default function Leads() {
                     célula fica vazia em vez de oferecer um botão que só
                     produziria erro. */}
                 <td>
-                  {item.telefone_e164 ?? item.telefone_exibicao ? (
+                  {(item.telefone_e164 ?? item.telefone_exibicao) ? (
                     <BotaoEnviar
                       leadId={item.id}
                       aoEnviar={(statusAtivacao) => aplicarStatus(item.id, statusAtivacao)}
