@@ -30,4 +30,15 @@ export const STATUS_ATIVACAO_OPCOES = [
   { valor: "falhou", rotulo: "Falhou" },
 ] as const;
 
+/**
+ * Rótulo de exibição do status de ativação, o mesmo do filtro. A lista
+ * mostra o rótulo, não o valor cru gravado no banco: "dry_run" é vocabulário
+ * de contrato de API, não de quem opera a tela.
+ */
+export function rotuloStatus(status: string | null | undefined): string {
+  if (!status) return "Pendente";
+  const opcao = STATUS_ATIVACAO_OPCOES.find((o) => o.valor === status);
+  return opcao ? opcao.rotulo : status;
+}
+
 export { PORTAIS };

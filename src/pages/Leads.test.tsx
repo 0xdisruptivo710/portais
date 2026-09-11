@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import Leads from "./Leads";
@@ -125,13 +125,16 @@ describe("tela de leads: botao de envio por linha", () => {
     render(<Leads />);
 
     await screen.findByText("Fulano");
-    expect(screen.getByText("dry_run")).toBeInTheDocument();
+    // A busca é presa à tabela: "Simulado" e "Enviado" também são rótulos das
+    // opções do filtro de status, e procurar na tela inteira acharia os dois.
+    const tabela = screen.getByRole("table");
+    expect(within(tabela).getByText("Simulado")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: /^enviar$/i }));
     await userEvent.click(await screen.findByRole("button", { name: /confirmar envio/i }));
 
-    expect(await screen.findByText("enviado")).toBeInTheDocument();
-    expect(screen.queryByText("dry_run")).not.toBeInTheDocument();
+    expect(await within(tabela).findByText("Enviado")).toBeInTheDocument();
+    expect(within(tabela).queryByText("Simulado")).not.toBeInTheDocument();
     // A lista não é refeita: o estado novo veio da resposta do envio.
     expect(f.mock.calls.filter((c) => String(c[0]).startsWith("/api/leads"))).toHaveLength(1);
   });
