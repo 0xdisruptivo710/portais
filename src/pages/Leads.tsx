@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import BotaoEnviar from "../components/BotaoEnviar";
 import { buscarJson } from "../lib/api";
 import { PORTAIS, rotuloPortal, STATUS_ATIVACAO_OPCOES } from "../lib/portais";
 
@@ -7,6 +8,7 @@ interface LeadItem {
   portal: string;
   nome: string | null;
   veiculo_texto: string | null;
+  telefone_e164?: string | null;
   telefone_exibicao: string | null;
   status_ativacao: string | null;
   capturado_em?: string | null;
@@ -63,6 +65,17 @@ export default function Leads() {
     });
   }, [itens, statusFiltro, inicioFiltro, fimFiltro]);
 
+  /**
+   * Depois do envio a linha passa a mostrar o estado real sem refazer a
+   * busca: a resposta do /api/enviar já diz o que aconteceu com aquele lead,
+   * e recarregar a lista inteira só devolveria o operador ao topo da página.
+   */
+  function aplicarStatus(id: number, statusAtivacao: string) {
+    setItens((atuais) =>
+      atuais.map((item) => (item.id === id ? { ...item, status_ativacao: statusAtivacao } : item)),
+    );
+  }
+
   return (
     <section>
       <h1>Leads</h1>
@@ -118,6 +131,7 @@ export default function Leads() {
               <th>Veículo</th>
               <th>Telefone</th>
               <th>Status</th>
+              <th>Envio</th>
             </tr>
           </thead>
           <tbody>
@@ -128,6 +142,18 @@ export default function Leads() {
                 <td>{item.veiculo_texto ?? "sem veículo"}</td>
                 <td>{item.telefone_exibicao ?? "sem telefone"}</td>
                 <td>{item.status_ativacao ?? "pendente"}</td>
+                {/* Sem telefone não existe para onde enviar (é o caso de OLX e
+                    Mercado Livre, que não entregam o número no e-mail): a
+                    célula fica vazia em vez de oferecer um botão que só
+                    produziria erro. */}
+                <td>
+                  {item.telefone_e164 ?? item.telefone_exibicao ? (
+                    <BotaoEnviar
+                      leadId={item.id}
+                      aoEnviar={(statusAtivacao) => aplicarStatus(item.id, statusAtivacao)}
+                    />
+                  ) : null}
+                </td>
               </tr>
             ))}
           </tbody>

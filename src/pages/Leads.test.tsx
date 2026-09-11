@@ -56,3 +56,83 @@ describe("tela de leads", () => {
     expect(f).toHaveBeenCalledWith("/api/leads");
   });
 });
+
+const LEAD_COM_TELEFONE = {
+  id: 1,
+  portal: "webmotors",
+  nome: "Fulano",
+  veiculo_texto: "Civic 2020",
+  telefone_e164: "5515991280217",
+  telefone_exibicao: "+55 (15) 99128-0217",
+  status_ativacao: "dry_run",
+};
+
+const PREVIA = {
+  texto: "Oi Fulano, tudo bem? Vi seu interesse no Civic 2020.",
+  telefone_exibicao: "+55 (15) 99128-0217",
+  para: "+55|15991280217",
+  bloqueado: false,
+  motivo: null,
+  ultimo_contato_em: null,
+  dias_desde_ultimo_contato: null,
+};
+
+/**
+ * Roteia por URL e por método: a lista, a prévia do envio e o disparo são
+ * três chamadas diferentes, e o teste de "a linha reflete o novo estado"
+ * depende de as três serem distinguíveis.
+ */
+function mockarApiDeLeads(itens: unknown[], envio: unknown) {
+  const f = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.startsWith("/api/leads")) {
+      return { ok: true, status: 200, json: async () => ({ itens }) };
+    }
+    if (init?.method === "POST") return { ok: true, status: 200, json: async () => envio };
+    return { ok: true, status: 200, json: async () => PREVIA };
+  });
+  vi.stubGlobal("fetch", f);
+  return f;
+}
+
+describe("tela de leads: botao de envio por linha", () => {
+  it("lead com telefone ganha o botao de enviar", async () => {
+    mockarApiDeLeads([LEAD_COM_TELEFONE], null);
+    render(<Leads />);
+
+    await screen.findByText("Fulano");
+    expect(screen.getByRole("button", { name: /^enviar$/i })).toBeInTheDocument();
+  });
+
+  // OLX e Mercado Livre não entregam telefone no e-mail: esses leads não têm
+  // para onde enviar, e um botão ali só produziria erro.
+  it("lead sem telefone nao ganha botao nenhum", async () => {
+    mockarApiDeLeads([{ ...LEAD_COM_TELEFONE, telefone_e164: null, telefone_exibicao: null }], null);
+    render(<Leads />);
+
+    await screen.findByText("Fulano");
+    expect(screen.queryByRole("button", { name: /^enviar$/i })).not.toBeInTheDocument();
+  });
+
+  it("depois do envio a linha mostra o novo status, sem recarregar a pagina", async () => {
+    const f = mockarApiDeLeads([LEAD_COM_TELEFONE], {
+      acao: "enviar",
+      enviado: true,
+      motivo: null,
+      resposta_wts: { id: "msg-1" },
+      verificado: false,
+      verificacao_detalhe: "status QUEUED (id msg-1)",
+    });
+    render(<Leads />);
+
+    await screen.findByText("Fulano");
+    expect(screen.getByText("dry_run")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /^enviar$/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /confirmar envio/i }));
+
+    expect(await screen.findByText("enviado")).toBeInTheDocument();
+    expect(screen.queryByText("dry_run")).not.toBeInTheDocument();
+    // A lista não é refeita: o estado novo veio da resposta do envio.
+    expect(f.mock.calls.filter((c) => String(c[0]).startsWith("/api/leads"))).toHaveLength(1);
+  });
+});

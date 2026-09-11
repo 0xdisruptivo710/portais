@@ -223,3 +223,54 @@ form div {
   flex-direction: column;
   gap: 4px;
 }
+
+/* Confirmação do envio de um lead (src/components/BotaoEnviar.tsx). Ela vive
+ * dentro da célula da tabela, então precisa de largura mínima própria: o
+ * texto que vai sair tem que ser legível inteiro antes de o operador
+ * confirmar, e não espremido em uma coluna estreita. */
+.envio-confirmacao {
+  min-width: 320px;
+  padding: 12px;
+  border: 1px solid var(--cor-primaria);
+  border-radius: 6px;
+  background: var(--cor-superficie);
+}
+
+.envio-confirmacao h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.envio-confirmacao p {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.envio-mensagem {
+  padding: 8px;
+  border-left: 3px solid var(--cor-borda);
+  background: var(--cor-fundo);
+  white-space: pre-wrap;
+}
+
+.envio-acoes {
+  display: flex;
+  gap: 8px;
+}
+
+.envio-acoes button:first-child {
+  background: var(--cor-primaria);
+  color: var(--cor-primaria-texto);
+  border-color: var(--cor-primaria);
+}
+
+.envio-resultado p {
+  margin: 0 0 4px;
+  font-size: 13px;
+}
+
+/* A conferência de entrega é informação de rodapé, e não um carimbo de
+ * sucesso: fica em tom suave para não ser lida como "entregue". */
+.envio-conferencia {
+  color: var(--cor-texto-suave);
+}
