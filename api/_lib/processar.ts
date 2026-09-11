@@ -47,7 +47,7 @@ export async function processarEvento(eventoId: number): Promise<ResultadoProces
 
   // OLX e Mercado Livre só mandam botão. Vira card sem dados, com o link.
   if (!PORTAIS_COM_DADOS.includes(portal)) {
-    await gravarLead(eventoId, portal, null, "baixa", "manual");
+    await gravarLead(eventoId, portal, null, "baixa", "manual", ev.recebido_em);
     await marcar(eventoId, "parseado");
     return "sem_dados";
   }
@@ -79,7 +79,7 @@ export async function processarEvento(eventoId: number): Promise<ResultadoProces
     return "revisao";
   }
 
-  await gravarLead(eventoId, portal, lead, metodo === "ia" ? "media" : "alta", metodo);
+  await gravarLead(eventoId, portal, lead, metodo === "ia" ? "media" : "alta", metodo, ev.recebido_em);
   await marcar(eventoId, "parseado");
   return "lead";
 }
@@ -139,6 +139,7 @@ async function gravarLead(
   lead: LeadBruto | null,
   confianca: "alta" | "media" | "baixa",
   metodo: "parser" | "ia" | "manual",
+  recebidoEm: unknown,
 ): Promise<void> {
   const sb = getSupabase();
 
@@ -164,7 +165,7 @@ async function gravarLead(
         anuncio_url: lead?.anuncioUrl ?? null,
         anuncio_id_externo: lead?.anuncioIdExterno ?? null,
         mensagem_lead: lead?.mensagemLead ?? null,
-        capturado_em: new Date().toISOString(),
+        capturado_em: dataCapturaEm(recebidoEm),
         confianca,
         metodo,
         status_ativacao: "pendente",
@@ -177,4 +178,20 @@ async function gravarLead(
 
   if (error) throw new Error(error.message);
   if (!data || data.length === 0) throw new Error(`lead do evento ${eventoId} nao gravado`);
+}
+
+/**
+ * `capturado_em` tem que ser quando o e-mail chegou (recebido_em do evento),
+ * não quando o nosso código processou. Ao vivo a diferença é de minutos e
+ * passa despercebida; num backfill ela é o próprio motivo de existir da
+ * série diária — sem isso, 90 dias de leads reais colapsam num único dia de
+ * processamento. Guarda: e-mail sem data válida é raro, mas não pode travar
+ * o processamento — cai no horário atual.
+ */
+function dataCapturaEm(recebidoEm: unknown): string {
+  if (typeof recebidoEm === "string") {
+    const data = new Date(recebidoEm);
+    if (!Number.isNaN(data.getTime())) return data.toISOString();
+  }
+  return new Date().toISOString();
 }

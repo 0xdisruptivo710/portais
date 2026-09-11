@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mocka no mesmo estilo do padrão da casa (ingestao.test.ts): substitui o
 // módulo inteiro por um dublê e importa a função já mockada depois.
@@ -264,6 +264,70 @@ describe("processarEvento", () => {
       expect(extrairComIa).not.toHaveBeenCalled();
       expect(chamadasUpsertLead).toHaveLength(0);
       expect(chamadasUpdate.some((c) => c.status === "ignorado")).toBe(true);
+    });
+  });
+
+  // capturado_em tinha o momento em que o NOSSO código processou o e-mail,
+  // não quando o lead chegou. Ao vivo a diferença é de minutos e passa
+  // despercebida; num backfill de 90 dias, os 354 leads ficaram todos com o
+  // capturado_em de hoje e o gráfico "Leads por dia" colapsou tudo numa
+  // única barra. capturado_em tem que vir do recebido_em do evento.
+  describe("capturado_em vem do recebido_em do evento", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("evento com recebido_em: lead grava com a data do e-mail, não a de agora", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-09-10T15:00:00.000Z")); // "agora" do processamento
+      const { chamadasUpsertLead } = mockarSupabase({
+        evento: eventoBase({ portal: "webmotors", recebido_em: "2026-06-01T08:00:00.000Z" }), // data real do e-mail
+      });
+      vi.mocked(parserDoPortal).mockReturnValue(() => LEAD_PARSER);
+
+      await processarEvento(1);
+
+      expect(chamadasUpsertLead[0].payload.capturado_em).toBe("2026-06-01T08:00:00.000Z");
+    });
+
+    it("evento sem recebido_em (nulo): lead grava com o horário atual, sem quebrar o processamento", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-09-10T15:00:00.000Z"));
+      const { chamadasUpsertLead } = mockarSupabase({
+        evento: eventoBase({ portal: "webmotors", recebido_em: null }),
+      });
+      vi.mocked(parserDoPortal).mockReturnValue(() => LEAD_PARSER);
+
+      await processarEvento(1);
+
+      expect(chamadasUpsertLead[0].payload.capturado_em).toBe("2026-09-10T15:00:00.000Z");
+    });
+
+    it("evento com recebido_em inválido: mesma guarda, cai no horário atual", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-09-10T15:00:00.000Z"));
+      const { chamadasUpsertLead } = mockarSupabase({
+        evento: eventoBase({ portal: "webmotors", recebido_em: "nao-e-uma-data" }),
+      });
+      vi.mocked(parserDoPortal).mockReturnValue(() => LEAD_PARSER);
+
+      await processarEvento(1);
+
+      expect(chamadasUpsertLead[0].payload.capturado_em).toBe("2026-09-10T15:00:00.000Z");
+    });
+
+    it("lead sem dados (OLX/Mercado Livre) também usa o recebido_em do evento", async () => {
+      const { chamadasUpsertLead } = mockarSupabase({
+        evento: eventoBase({
+          portal: "olx",
+          assunto: "Oba! Tem mensagem nova de Fulano",
+          recebido_em: "2026-06-01T08:00:00.000Z",
+        }),
+      });
+
+      await processarEvento(1);
+
+      expect(chamadasUpsertLead[0].payload.capturado_em).toBe("2026-06-01T08:00:00.000Z");
     });
   });
 });
