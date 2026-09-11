@@ -5,7 +5,7 @@ import { getSupabase } from "./_lib/supabase";
 
 import { assinarSessao, COOKIE_ADMIN } from "./_lib/sessao";
 
-const { default: handler } = await import("./revisao");
+const { GET, POST } = await import("./revisao");
 
 const SEGREDO_SESSAO = "segredo-de-teste-bem-longo-mesmo";
 
@@ -105,7 +105,7 @@ describe("GET /api/revisao", () => {
   it("lista os eventos com status revisao", async () => {
     mockarSupabase({ eventosRevisao: [{ id: 9, portal: "webmotors" }] });
 
-    const r = await handler(comSessao("https://x/api/revisao"));
+    const r = await GET(comSessao("https://x/api/revisao"));
 
     expect(r.status).toBe(200);
     const corpo = await r.json();
@@ -115,7 +115,7 @@ describe("GET /api/revisao", () => {
   it("devolve 500 quando o supabase falha, sem mascarar como lista vazia", async () => {
     mockarSupabase({ erroListaEventos: { message: "boom" } });
 
-    const r = await handler(comSessao("https://x/api/revisao"));
+    const r = await GET(comSessao("https://x/api/revisao"));
 
     expect(r.status).toBe(500);
   });
@@ -123,7 +123,7 @@ describe("GET /api/revisao", () => {
 
 describe("POST /api/revisao", () => {
   function postar(corpo: unknown) {
-    return handler(
+    return POST(
       comSessao("https://x/api/revisao", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -140,7 +140,7 @@ describe("POST /api/revisao", () => {
 
   it("recusa json invalido", async () => {
     mockarSupabase();
-    const r = await handler(
+    const r = await POST(
       comSessao("https://x/api/revisao", { method: "POST", body: "{invalido" }),
     );
     expect(r.status).toBe(400);
@@ -186,20 +186,27 @@ describe("POST /api/revisao", () => {
 });
 
 describe("guarda de sessao de /api/revisao", () => {
-  it("recusa com 401 quem chama sem cookie de sessao", async () => {
-    const r = await handler(new Request("https://x/api/revisao"));
+  // A guarda é chamada em GET e em POST (ver revisao.ts): os testes abaixo
+  // cobrem os dois, já que agora são funções exportadas separadas.
+  it("recusa com 401 quem chama sem cookie de sessao (GET)", async () => {
+    const r = await GET(new Request("https://x/api/revisao"));
+    expect(r.status).toBe(401);
+  });
+
+  it("recusa com 401 quem chama sem cookie de sessao (POST)", async () => {
+    const r = await POST(new Request("https://x/api/revisao", { method: "POST" }));
     expect(r.status).toBe(401);
   });
 
   it("recusa com 401 cookie assinado com outro segredo", async () => {
     const forjado = `${COOKIE_ADMIN}=${assinarSessao(Date.now() + 60_000, "outro-segredo")}`;
-    const r = await handler(new Request("https://x/api/revisao", { headers: { cookie: forjado } }));
+    const r = await GET(new Request("https://x/api/revisao", { headers: { cookie: forjado } }));
     expect(r.status).toBe(401);
   });
 
   it("sem ADMIN_SESSION_SECRET no ambiente, recusa em vez de liberar", async () => {
     delete process.env.ADMIN_SESSION_SECRET;
-    const r = await handler(comSessao("https://x/api/revisao"));
+    const r = await GET(comSessao("https://x/api/revisao"));
     expect(r.status).toBe(500);
   });
 });

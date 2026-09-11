@@ -45,15 +45,19 @@ function campoPreenchido(v: unknown): boolean {
  * kill_switch é booleano puro pelo mesmo motivo: "true" (string) liga o
  * kill-switch por engano se não fosse recusado aqui.
  */
-export default async function handler(request: Request): Promise<Response> {
+export async function GET(request: Request): Promise<Response> {
   // Painel é interno: sem sessão, nada é lido nem gravado. Os GET daqui
   // devolvem nome, telefone, e-mail e a mensagem escrita pelo lead.
   const barrado = exigirAdmin(request);
   if (barrado) return barrado;
+  return buscar();
+}
 
-  if (request.method === "GET") return buscar();
-  if (request.method === "PUT") return atualizar(request);
-  return erro("metodo nao permitido", 405);
+export async function PUT(request: Request): Promise<Response> {
+  // Mesma guarda do GET: sessão é a primeira coisa, antes de tocar no banco.
+  const barrado = exigirAdmin(request);
+  if (barrado) return barrado;
+  return atualizar(request);
 }
 
 async function buscar(): Promise<Response> {

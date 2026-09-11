@@ -11,9 +11,7 @@ import { cabecalhoSessao } from "./_lib/sessao.js";
  * malformado" de "senha errada": diferenciar só ajudaria quem está tentando
  * adivinhar.
  */
-export default async function handler(request: Request): Promise<Response> {
-  if (request.method !== "POST") return erro("metodo nao permitido", 405);
-
+export async function POST(request: Request): Promise<Response> {
   const senhaEsperada = process.env.ADMIN_SENHA;
   const segredo = process.env.ADMIN_SESSION_SECRET;
   if (!senhaEsperada || !segredo) return erro("painel nao configurado", 500);

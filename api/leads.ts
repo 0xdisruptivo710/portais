@@ -11,7 +11,7 @@ const LIMITE_PADRAO = 50;
  * chegar ao banco: repassar um valor qualquer pro PostgREST devolveria uma
  * lista vazia (portal inexistente) em vez do 400 que avisa quem chamou.
  */
-export default async function handler(request: Request): Promise<Response> {
+export async function GET(request: Request): Promise<Response> {
   // Painel é interno: sem sessão, nada é lido nem gravado. Os GET daqui
   // devolvem nome, telefone, e-mail e a mensagem escrita pelo lead.
   const barrado = exigirAdmin(request);

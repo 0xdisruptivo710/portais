@@ -8,7 +8,7 @@ vi.mock("./_lib/supabase", () => ({ getSupabase: () => ({ from: () => ({ select 
 
 import { assinarSessao, COOKIE_ADMIN } from "./_lib/sessao";
 
-const { default: handler } = await import("./leads");
+const { GET: handler } = await import("./leads");
 
 const SEGREDO_SESSAO = "segredo-de-teste-bem-longo-mesmo";
 

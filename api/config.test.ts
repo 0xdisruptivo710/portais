@@ -5,7 +5,7 @@ import { getSupabase } from "./_lib/supabase";
 
 import { assinarSessao, COOKIE_ADMIN } from "./_lib/sessao";
 
-const { default: handler } = await import("./config");
+const { GET, PUT } = await import("./config");
 
 const SEGREDO_SESSAO = "segredo-de-teste-bem-longo-mesmo";
 
@@ -74,7 +74,7 @@ function mockarSupabase(estado: EstadoFrom = {}) {
 }
 
 function put(corpo: unknown) {
-  return handler(
+  return PUT(
     comSessao("https://x/api/config", {
       method: "PUT",
       headers: { "content-type": "application/json" },
@@ -90,7 +90,7 @@ beforeEach(() => {
 describe("GET /api/config", () => {
   it("devolve a config do cliente", async () => {
     mockarSupabase();
-    const r = await handler(comSessao("https://x/api/config"));
+    const r = await GET(comSessao("https://x/api/config"));
     expect(r.status).toBe(200);
     const corpo = await r.json();
     expect(corpo.modo_envio).toBe("dry_run");
@@ -98,7 +98,7 @@ describe("GET /api/config", () => {
 
   it("404 quando a config nao existe", async () => {
     mockarSupabase({ cfg: null });
-    const r = await handler(comSessao("https://x/api/config"));
+    const r = await GET(comSessao("https://x/api/config"));
     expect(r.status).toBe(404);
   });
 });
@@ -200,7 +200,7 @@ describe("PUT /api/config", () => {
 
   it("recusa json invalido", async () => {
     mockarSupabase();
-    const r = await handler(
+    const r = await PUT(
       comSessao("https://x/api/config", { method: "PUT", body: "{invalido" }),
     );
     expect(r.status).toBe(400);
@@ -224,28 +224,34 @@ describe("PUT /api/config", () => {
     expect(r.status).toBe(500);
   });
 
-  it("metodo nao permitido", async () => {
-    mockarSupabase();
-    const r = await handler(comSessao("https://x/api/config", { method: "DELETE" }));
-    expect(r.status).toBe(405);
-  });
+  // O 405 para verbo nao suportado (ex.: DELETE) nao e mais responsabilidade
+  // deste modulo: so GET e PUT sao exportados, e a Vercel responde 405
+  // sozinha (com Allow) quando o metodo da requisicao nao bate com nenhum
+  // export nomeado do arquivo. Reimplementar aqui seria redundante.
 });
 
 describe("guarda de sessao de /api/config", () => {
-  it("recusa com 401 quem chama sem cookie de sessao", async () => {
-    const r = await handler(new Request("https://x/api/config"));
+  // A guarda e chamada em GET e em PUT (ver config.ts): os testes abaixo
+  // cobrem os dois, ja que agora sao funcoes exportadas separadas.
+  it("recusa com 401 quem chama sem cookie de sessao (GET)", async () => {
+    const r = await GET(new Request("https://x/api/config"));
+    expect(r.status).toBe(401);
+  });
+
+  it("recusa com 401 quem chama sem cookie de sessao (PUT)", async () => {
+    const r = await PUT(new Request("https://x/api/config", { method: "PUT" }));
     expect(r.status).toBe(401);
   });
 
   it("recusa com 401 cookie assinado com outro segredo", async () => {
     const forjado = `${COOKIE_ADMIN}=${assinarSessao(Date.now() + 60_000, "outro-segredo")}`;
-    const r = await handler(new Request("https://x/api/config", { headers: { cookie: forjado } }));
+    const r = await GET(new Request("https://x/api/config", { headers: { cookie: forjado } }));
     expect(r.status).toBe(401);
   });
 
   it("sem ADMIN_SESSION_SECRET no ambiente, recusa em vez de liberar", async () => {
     delete process.env.ADMIN_SESSION_SECRET;
-    const r = await handler(comSessao("https://x/api/config"));
+    const r = await GET(comSessao("https://x/api/config"));
     expect(r.status).toBe(500);
   });
 });

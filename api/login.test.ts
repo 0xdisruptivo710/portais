@@ -1,17 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { COOKIE_ADMIN, sessaoValida } from "./_lib/sessao";
 
-const { default: handler } = await import("./login");
+const { POST: handler } = await import("./login");
 
 const SENHA = "senha-da-operacao";
 const SEGREDO = "segredo-de-teste-bem-longo-mesmo";
 
-function entrar(corpo: unknown, metodo = "POST"): Promise<Response> {
+function entrar(corpo: unknown): Promise<Response> {
   return handler(
     new Request("https://x/api/login", {
-      method: metodo,
+      method: "POST",
       headers: { "content-type": "application/json" },
-      body: metodo === "POST" ? JSON.stringify(corpo) : undefined,
+      body: JSON.stringify(corpo),
     }),
   );
 }
@@ -71,7 +71,7 @@ describe("POST /api/login", () => {
     expect((await entrar({ senha: SENHA })).status).toBe(500);
   });
 
-  it("so aceita POST", async () => {
-    expect((await entrar(null, "GET")).status).toBe(405);
-  });
+  // "So aceita POST" nao e mais responsabilidade deste modulo: so POST e
+  // exportado, e a Vercel responde 405 sozinha (com Allow) quando o metodo
+  // da requisicao nao bate com nenhum export nomeado do arquivo.
 });

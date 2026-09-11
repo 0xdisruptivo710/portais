@@ -14,7 +14,7 @@ import { ingerir } from "../_lib/ingestao";
 import { ativarPendentes, interpretarPendentes } from "../_lib/fila";
 import { simpleParser } from "mailparser";
 
-const { default: handler } = await import("./varrer");
+const { GET: handler } = await import("./varrer");
 
 const SEGREDO_CRON = "segredo-do-cron-de-teste";
 

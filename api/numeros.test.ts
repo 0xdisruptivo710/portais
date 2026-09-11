@@ -5,7 +5,7 @@ import { getSupabase } from "./_lib/supabase";
 
 import { assinarSessao, COOKIE_ADMIN } from "./_lib/sessao";
 
-const { default: handler } = await import("./numeros");
+const { GET: handler } = await import("./numeros");
 
 const SEGREDO_SESSAO = "segredo-de-teste-bem-longo-mesmo";
 

@@ -25,7 +25,7 @@ interface NumerosPortal {
  * partir de uma única leitura de portais_leads: o volume desta base não
  * justifica RPC nem uma segunda consulta filtrada por data.
  */
-export default async function handler(request: Request): Promise<Response> {
+export async function GET(request: Request): Promise<Response> {
   // Painel é interno: sem sessão, nada é lido nem gravado. Os GET daqui
   // devolvem nome, telefone, e-mail e a mensagem escrita pelo lead.
   const barrado = exigirAdmin(request);
