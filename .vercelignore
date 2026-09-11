@@ -1,0 +1,14 @@
+# A Vercel trata todo .ts dentro de api/ como candidato a Function --
+# inclusive os arquivos de teste, que importam vitest e mocks e nao tem
+# nada a fazer atendendo requisicao HTTP em produção. Confirmado via
+# `vercel inspect`: api/config.test e api/cron/varrer.test apareciam como
+# functions publicadas. Mesma glob do vitest.config.ts (api/**/*.{test,spec}.ts),
+# pra nunca dessincronizar de onde os testes realmente moram.
+api/**/*.test.ts
+api/**/*.spec.ts
+
+# Defesa extra: .env sem sufixo .local nao entra na lista de ignorados
+# automaticos da Vercel (só .env.local e .env.*.local entram). Já é
+# gitignored, mas um `vercel deploy` local (fora do fluxo por git) não
+# passa pelo git -- isso evita subir credencial por engano nesse caminho.
+.env*
