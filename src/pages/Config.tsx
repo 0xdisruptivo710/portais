@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { AlertCircle, CheckCircle2, Info, Loader2, Power, TriangleAlert } from "lucide-react";
 import { mensagemDeErro } from "../lib/api";
 
 interface ConfigCliente {
@@ -16,6 +17,10 @@ const FRASE_CONFIRMACAO = "ENVIAR DE VERDADE";
  * A assimetria é proposital: ligar o envio real exige digitar a frase de
  * confirmação; parar tudo (kill-switch) é um clique só. O freio nunca pode
  * ser mais difícil de acionar do que o acelerador.
+ *
+ * A tela desenha essa assimetria: o freio fica no topo, sozinho, alcançável
+ * de qualquer lugar da página; o acelerador fica no fim do formulário, num
+ * bloco destacado que diz o que vai acontecer antes de acontecer.
  */
 export default function Config() {
   const [carregando, setCarregando] = useState(true);
@@ -120,79 +125,169 @@ export default function Config() {
     }
   }
 
-  if (carregando) return <p>Carregando configuração...</p>;
-  if (erro) return <p role="alert">Não foi possível carregar a configuração: {erro}</p>;
+  if (carregando) {
+    return (
+      <p className="carregando">
+        <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
+        Carregando configuração...
+      </p>
+    );
+  }
+
+  if (erro) {
+    return (
+      <p role="alert" className="faixa-erro">
+        <AlertCircle aria-hidden="true" className="mt-px h-4 w-4 shrink-0" />
+        Não foi possível carregar a configuração: {erro}
+      </p>
+    );
+  }
 
   return (
-    <section>
-      <h1>Configuração</h1>
+    <section className="flex flex-col gap-4">
+      <h1 className="sr-only">Configuração</h1>
 
-      <p>
-        Modo de envio atual: <strong>{modoOriginal}</strong>
-      </p>
+      {/* O freio, no topo e sozinho: um clique para e um clique retoma. */}
+      <div className="cartao flex flex-col gap-3 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex flex-col gap-1.5">
+            <p className="rotulo">Modo de envio atual</p>
+            <p>
+              <span className={modoOriginal === "real" ? "selo selo-atencao" : "selo"}>{modoOriginal}</span>
+            </p>
+            <p className="dica max-w-[46ch]">
+              {modoOriginal === "real"
+                ? "Cada confirmação na aba Leads manda mensagem de verdade para o cliente."
+                : "Simulação. O envio é registrado no lead, mas nenhuma mensagem chega ao cliente."}
+            </p>
+          </div>
 
-      <p>
-        Kill-switch: <strong>{killSwitch ? "ligado, nada sai" : "desligado"}</strong>
-      </p>
-      <button type="button" onClick={pararOuRetomar}>
-        {killSwitch ? "Retomar envio" : "Parar tudo"}
-      </button>
+          <div className="flex w-full flex-col gap-1.5 sm:w-auto sm:items-end">
+            <p className="rotulo">Kill-switch</p>
+            <p className="text-[13px] text-aios-texto-suave">
+              {killSwitch ? "ligado, nada sai" : "desligado"}
+            </p>
+            <button
+              type="button"
+              className={killSwitch ? "botao botao-primario botao-grande" : "botao botao-perigo botao-grande"}
+              onClick={pararOuRetomar}
+            >
+              <Power aria-hidden="true" className="h-4 w-4" />
+              {killSwitch ? "Retomar envio" : "Parar tudo"}
+            </button>
+          </div>
+        </div>
 
-      <form onSubmit={salvar}>
-        <div>
-          <label htmlFor="config-boas-vindas">Texto de boas-vindas</label>
+        {killSwitch ? (
+          <p className="faixa-atencao">
+            <TriangleAlert aria-hidden="true" className="mt-px h-4 w-4 shrink-0" />
+            Envio parado. Nenhuma mensagem sai enquanto o kill-switch estiver ligado, nem em simulação.
+          </p>
+        ) : modoOriginal === "real" ? (
+          <p className="faixa-info">
+            <Info aria-hidden="true" className="mt-px h-4 w-4 shrink-0" />
+            Envio real ligado. Um clique em Parar tudo interrompe na hora, sem confirmação nenhuma.
+          </p>
+        ) : null}
+
+        {erroSalvar && (
+          <p role="alert" className="faixa-erro">
+            <AlertCircle aria-hidden="true" className="mt-px h-4 w-4 shrink-0" />
+            {erroSalvar}
+          </p>
+        )}
+        {mensagem && (
+          <p role="status" className="faixa-ok">
+            <CheckCircle2 aria-hidden="true" className="mt-px h-4 w-4 shrink-0" />
+            {mensagem}
+          </p>
+        )}
+      </div>
+
+      <form className="cartao flex flex-col gap-4 p-4" onSubmit={salvar}>
+        <div className="campo">
+          <label className="rotulo" htmlFor="config-boas-vindas">
+            Texto de boas-vindas
+          </label>
           <textarea
             id="config-boas-vindas"
             value={textoBoasVindas}
             onChange={(e) => setTextoBoasVindas(e.target.value)}
           />
+          <p className="dica">
+            É o primeiro contato que o lead recebe. Vale conferir a prévia na aba Leads antes de salvar.
+          </p>
         </div>
 
-        <div>
-          <label htmlFor="config-horario-inicio">Janela de horário, início</label>
-          <input
-            id="config-horario-inicio"
-            type="time"
-            value={horarioInicio}
-            onChange={(e) => setHorarioInicio(e.target.value)}
-          />
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="campo">
+            <label className="rotulo" htmlFor="config-horario-inicio">
+              Janela de horário, início
+            </label>
+            <input
+              id="config-horario-inicio"
+              type="time"
+              value={horarioInicio}
+              onChange={(e) => setHorarioInicio(e.target.value)}
+            />
+          </div>
+
+          <div className="campo">
+            <label className="rotulo" htmlFor="config-horario-fim">
+              Janela de horário, fim
+            </label>
+            <input
+              id="config-horario-fim"
+              type="time"
+              value={horarioFim}
+              onChange={(e) => setHorarioFim(e.target.value)}
+            />
+          </div>
         </div>
 
-        <div>
-          <label htmlFor="config-horario-fim">Janela de horário, fim</label>
-          <input
-            id="config-horario-fim"
-            type="time"
-            value={horarioFim}
-            onChange={(e) => setHorarioFim(e.target.value)}
-          />
-        </div>
+        {/* O acelerador. Bloco próprio, moldura de atenção e a frase de
+            confirmação: ligar o envio real é uma decisão, não um clique de
+            passagem. O freio lá em cima continua a um clique. */}
+        <div className="flex flex-col gap-3 rounded-aios border border-amber-300 bg-aios-atencao-fundo p-3">
+          <h2 className="text-[14px] text-aios-atencao-texto">Envio real</h2>
+          <p className="text-[13px] text-aios-atencao-texto">
+            Com o envio real ligado, cada confirmação na aba Leads manda uma mensagem de WhatsApp para
+            um cliente de verdade. Não tem desfazer.
+          </p>
 
-        <div>
-          <label htmlFor="config-envio-real">
+          <label className="flex cursor-pointer items-center gap-2 text-[13px] font-medium text-aios-atencao-texto" htmlFor="config-envio-real">
             <input
               id="config-envio-real"
               type="checkbox"
               checked={envioRealMarcado}
               onChange={(e) => setEnvioRealMarcado(e.target.checked)}
             />
-            {" "}Ativar envio real
+            Ativar envio real
           </label>
+
+          {precisaConfirmar && (
+            <div className="campo">
+              <label className="rotulo text-aios-atencao-texto" htmlFor="config-confirma">
+                Frase de confirmação, digite {FRASE_CONFIRMACAO}
+              </label>
+              <input id="config-confirma" value={frase} onChange={(e) => setFrase(e.target.value)} />
+            </div>
+          )}
         </div>
 
-        {precisaConfirmar && (
-          <div>
-            <label htmlFor="config-confirma">Frase de confirmação, digite {FRASE_CONFIRMACAO}</label>
-            <input id="config-confirma" value={frase} onChange={(e) => setFrase(e.target.value)} />
-          </div>
-        )}
-
-        {erroSalvar && <p role="alert">{erroSalvar}</p>}
-        {mensagem && <p role="status">{mensagem}</p>}
-
-        <button type="submit" disabled={!podeSalvar || salvando}>
-          Salvar
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="submit"
+            className="botao botao-primario botao-grande"
+            disabled={!podeSalvar || salvando}
+          >
+            {salvando && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}
+            Salvar
+          </button>
+          {!podeSalvar && (
+            <p className="dica">Digite a frase acima, exatamente como está escrita, para liberar.</p>
+          )}
+        </div>
       </form>
     </section>
   );
