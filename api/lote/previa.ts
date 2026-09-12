@@ -1,6 +1,7 @@
 import { dentroDaJanela } from "../_lib/ativacao.js";
 import { erro, json } from "../_lib/http.js";
 import {
+  lerLeadIds,
   PAUSA_ENTRE_ENVIOS_MS,
   resumirLote,
   TETO_POR_LOTE,
@@ -119,22 +120,6 @@ export async function POST(request: Request): Promise<Response> {
     // lê a prévia como palavra final.
     conversa_wts_confere_no_envio: true,
   });
-}
-
-/**
- * Lista de ids inteiros e positivos, sem repetição, dentro do teto. Number("")
- * é 0 e Number(null) é 0, então a checagem de inteiro positivo é o que impede
- * um item ausente de virar consulta ao lead de id 0.
- */
-export function lerLeadIds(bruto: unknown, teto: number): number[] | null {
-  if (!Array.isArray(bruto) || bruto.length === 0 || bruto.length > teto) return null;
-  const ids: number[] = [];
-  for (const item of bruto) {
-    if (typeof item !== "number" || !Number.isInteger(item) || item <= 0) return null;
-    if (ids.includes(item)) return null;
-    ids.push(item);
-  }
-  return ids;
 }
 
 async function lerLeads(sb: ReturnType<typeof getSupabase>, ids: number[]): Promise<LeadDoLote[]> {

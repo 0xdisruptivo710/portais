@@ -36,6 +36,24 @@ export const TETO_POR_LOTE = 60;
 export const TETO_POR_REQUISICAO = 5;
 export const PRAZO_REQUISICAO_MS = 200_000;
 
+/**
+ * Lista de ids inteiros e positivos, sem repetição, dentro do teto. Number("")
+ * é 0 e Number(null) é 0, então a checagem de inteiro positivo é o que impede
+ * um item ausente de virar consulta ao lead de id 0. Id repetido é recusado,
+ * e não deduplicado em silêncio: a mesma pessoa duas vezes no mesmo lote é
+ * sinal de que quem montou a lista se enganou.
+ */
+export function lerLeadIds(bruto: unknown, teto: number): number[] | null {
+  if (!Array.isArray(bruto) || bruto.length === 0 || bruto.length > teto) return null;
+  const ids: number[] = [];
+  for (const item of bruto) {
+    if (typeof item !== "number" || !Number.isInteger(item) || item <= 0) return null;
+    if (ids.includes(item)) return null;
+    ids.push(item);
+  }
+  return ids;
+}
+
 export type SituacaoLead = "enviado" | "bloqueado" | "falhou";
 
 export interface ResultadoLead {

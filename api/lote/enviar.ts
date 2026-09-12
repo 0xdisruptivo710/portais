@@ -1,10 +1,9 @@
 import { ativarLeadDetalhado, dentroDaJanela } from "../_lib/ativacao.js";
 import { erro, json } from "../_lib/http.js";
-import { executarFatia, TETO_POR_LOTE, type DepsLote } from "../_lib/lote.js";
+import { executarFatia, lerLeadIds, TETO_POR_LOTE, type DepsLote } from "../_lib/lote.js";
 import { exigirOrigemConfiavel } from "../_lib/origem.js";
 import { exigirAdmin } from "../_lib/sessao.js";
 import { getSupabase } from "../_lib/supabase.js";
-import { lerLeadIds } from "./previa.js";
 
 // Único cliente ativo por enquanto (mesmo hardcode de config.ts).
 const CLIENTE_SLUG = "malentachi";
