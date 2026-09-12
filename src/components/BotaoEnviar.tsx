@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { AlertCircle, AlertTriangle, Ban, CheckCircle2, Loader2, Send } from "lucide-react";
-import { mensagemDeErro } from "../lib/api";
+import { chamarApi, mensagemDeErro } from "../lib/api";
 
 interface Previa {
   texto: string;
@@ -50,7 +50,7 @@ export default function BotaoEnviar({ leadId, aoEnviar }: Props) {
     setErro(null);
     setResultado(null);
     try {
-      const resposta = await fetch(`/api/enviar?leadId=${leadId}`);
+      const resposta = await chamarApi(`/api/enviar?leadId=${leadId}`);
       const corpo = await resposta.json().catch(() => null);
       if (!resposta.ok) throw new Error(mensagemDeErro(corpo, "falha ao carregar a prévia do envio"));
       setPrevia(corpo as Previa);
@@ -66,7 +66,7 @@ export default function BotaoEnviar({ leadId, aoEnviar }: Props) {
     setEnviando(true);
     setErro(null);
     try {
-      const resposta = await fetch("/api/enviar", {
+      const resposta = await chamarApi("/api/enviar", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ leadId }),

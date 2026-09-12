@@ -1,8 +1,10 @@
 import { useState, type FormEvent } from "react";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, Clock } from "lucide-react";
 
 interface Props {
   aoEntrar: () => void;
+  /** Chegou aqui porque a sessão caiu com o painel aberto, não por ser o primeiro acesso. */
+  expirada?: boolean;
 }
 
 /**
@@ -12,8 +14,12 @@ interface Props {
  *
  * É a única tela que pode ser autônoma e centralizada: ela aparece antes de
  * o embed no AIOS fazer sentido. Os tokens, porém, são os mesmos.
+ *
+ * Quando a volta para cá é por sessão expirada, a tela precisa dizer isso.
+ * Um login idêntico ao do primeiro acesso faz o operador achar que digitou a
+ * senha errada e procurar um problema que não existe.
  */
-export default function Login({ aoEntrar }: Props) {
+export default function Login({ aoEntrar, expirada = false }: Props) {
   const [senha, setSenha] = useState("");
   const [erro, setErro] = useState<string | null>(null);
   const [entrando, setEntrando] = useState(false);
@@ -23,6 +29,9 @@ export default function Login({ aoEntrar }: Props) {
     setEntrando(true);
     setErro(null);
     try {
+      // Único fetch do painel que não passa por chamarApi, e de propósito:
+      // aqui 401 quer dizer "senha incorreta", não "sessão caiu". Derrubar a
+      // sessão a partir da própria tela de entrada seria um laço.
       const resposta = await fetch("/api/login", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -50,6 +59,13 @@ export default function Login({ aoEntrar }: Props) {
               Leads dos portais automotivos, prontos para o primeiro contato.
             </p>
           </div>
+
+          {expirada && (
+            <p role="status" className="faixa-atencao">
+              <Clock aria-hidden="true" className="mt-px h-4 w-4 shrink-0" />
+              Sua sessão expirou. Entre de novo.
+            </p>
+          )}
 
           <form onSubmit={entrar} className="flex flex-col gap-4">
             <div className="campo">

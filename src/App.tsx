@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
 import { Loader2 } from "lucide-react";
+import { aoPerderSessao, chamarApi, temSessao } from "./lib/api";
 import Config from "./pages/Config";
 import Leads from "./pages/Leads";
 import Login from "./pages/Login";
@@ -15,15 +16,38 @@ import Revisao from "./pages/Revisao";
  */
 export default function App() {
   const [autenticado, setAutenticado] = useState<boolean | null>(null);
+  const [expirada, setExpirada] = useState(false);
 
   // A guarda que vale é a do servidor (api/_lib/sessao.ts) — esta é só a
   // porta visível: sem sessão, mostra o login em vez de quatro telas vazias
   // com "nao autorizado". Erro de rede também cai no login, nunca no painel.
   useEffect(() => {
-    fetch("/api/config")
-      .then((resposta) => setAutenticado(resposta.status !== 401))
-      .catch(() => setAutenticado(false));
+    let ativo = true;
+    temSessao().then((tem) => {
+      if (ativo) setAutenticado(tem);
+    });
+    return () => {
+      ativo = false;
+    };
   }, []);
+
+  // O cookie dura 12h e a aba costuma passar a noite aberta. Quando ele
+  // expira, o painel continuava montado e cada tela exibia "nao autorizado"
+  // como se fosse um erro de conteúdo — o operador não tinha como saber que
+  // precisava entrar de novo. Agora qualquer 401 de qualquer endpoint
+  // derruba a sessão aqui, e o painel inteiro sai de cena.
+  //
+  // A inscrição só existe enquanto o painel está montado: a checagem de
+  // entrada, que recebe 401 quando ninguém entrou ainda, não passa por este
+  // caminho (ver temSessao em lib/api.ts) e não podia virar "sessão expirou"
+  // no primeiro acesso.
+  useEffect(() => {
+    if (autenticado !== true) return;
+    return aoPerderSessao(() => {
+      setExpirada(true);
+      setAutenticado(false);
+    });
+  }, [autenticado]);
 
   if (autenticado === null) {
     return (
@@ -36,7 +60,17 @@ export default function App() {
     );
   }
 
-  if (!autenticado) return <Login aoEntrar={() => setAutenticado(true)} />;
+  if (!autenticado) {
+    return (
+      <Login
+        expirada={expirada}
+        aoEntrar={() => {
+          setExpirada(false);
+          setAutenticado(true);
+        }}
+      />
+    );
+  }
 
   return (
     <BrowserRouter>
@@ -73,7 +107,7 @@ function Abas() {
 
   useEffect(() => {
     let ativo = true;
-    fetch("/api/revisao")
+    chamarApi("/api/revisao")
       .then((resposta) => (resposta.ok ? resposta.json() : null))
       .then((corpo: { itens?: unknown[] } | null) => {
         if (ativo && Array.isArray(corpo?.itens)) setPendentes(corpo.itens.length);

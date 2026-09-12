@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { AlertCircle, Inbox, Loader2 } from "lucide-react";
-import { buscarJson, mensagemDeErro } from "../lib/api";
+import { buscarJson, chamarApi, mensagemDeErro } from "../lib/api";
 import { rotuloPortal } from "../lib/portais";
 
 interface EventoRevisao {
@@ -78,7 +78,7 @@ export default function Revisao() {
     setEnviando(true);
     setErroEnvio(null);
     try {
-      const resposta = await fetch("/api/revisao", {
+      const resposta = await chamarApi("/api/revisao", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ evento_id: selecionado.id, ...form }),

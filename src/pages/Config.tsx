@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { AlertCircle, CheckCircle2, Info, Loader2, Power, TriangleAlert } from "lucide-react";
-import { mensagemDeErro } from "../lib/api";
+import { buscarJson, chamarApi, mensagemDeErro } from "../lib/api";
 
 interface ConfigCliente {
   texto_boas_vindas: string;
@@ -40,9 +40,8 @@ export default function Config() {
 
   useEffect(() => {
     let ativo = true;
-    fetch("/api/config")
-      .then((resposta) => resposta.json())
-      .then((dados: ConfigCliente) => {
+    buscarJson<ConfigCliente>("/api/config")
+      .then((dados) => {
         if (!ativo) return;
         setTextoBoasVindas(dados.texto_boas_vindas ?? "");
         setHorarioInicio((dados.horario_inicio ?? "").slice(0, 5));
@@ -79,7 +78,7 @@ export default function Config() {
     const modoEnvio = envioRealMarcado ? "real" : "dry_run";
 
     try {
-      const resposta = await fetch("/api/config", {
+      const resposta = await chamarApi("/api/config", {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -110,7 +109,7 @@ export default function Config() {
     const novoValor = !killSwitch;
 
     try {
-      const resposta = await fetch("/api/config", {
+      const resposta = await chamarApi("/api/config", {
         method: "PUT",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ kill_switch: novoValor }),

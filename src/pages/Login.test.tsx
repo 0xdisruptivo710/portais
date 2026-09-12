@@ -28,4 +28,16 @@ describe("tela de entrada", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/senha/i);
     expect(aoEntrar).not.toHaveBeenCalled();
   });
+
+  it("quando a sessao expirou, diz isso: senao parece senha errada", () => {
+    render(<Login aoEntrar={vi.fn()} expirada />);
+
+    expect(screen.getByText(/expirou/i)).toBeInTheDocument();
+  });
+
+  it("no primeiro acesso nao fala em expiracao", () => {
+    render(<Login aoEntrar={vi.fn()} />);
+
+    expect(screen.queryByText(/expirou/i)).not.toBeInTheDocument();
+  });
 });
