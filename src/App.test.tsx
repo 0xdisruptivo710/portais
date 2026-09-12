@@ -77,6 +77,35 @@ describe("entrada pela chave do embed", () => {
   });
 });
 
+/**
+ * A aba saiu a pedido do operador. A fila de revisao nao saiu: ela vive
+ * dentro da lista de Leads (ver pages/Leads.tsx). O que este teste garante e'
+ * so' que a navegacao nao oferece mais a tela separada.
+ */
+describe("navegacao sem a aba Revisao", () => {
+  it("as abas sao Leads, Numeros e Configuracao", async () => {
+    mockApi(() => 200);
+
+    render(<App />);
+
+    await screen.findByRole("link", { name: /leads/i });
+    expect(screen.getAllByRole("link").map((l) => l.textContent)).toEqual([
+      "Leads",
+      "Números",
+      "Configuração",
+    ]);
+  });
+
+  it("nao existe mais link para Revisao", async () => {
+    mockApi(() => 200);
+
+    render(<App />);
+
+    await screen.findByRole("link", { name: /leads/i });
+    expect(screen.queryByRole("link", { name: /revis/i })).not.toBeInTheDocument();
+  });
+});
+
 describe("sessao que cai com o painel aberto", () => {
   it("com a chave na URL, refaz a sessao uma vez e o operador nao ve nada", async () => {
     chaveNaUrl(CHAVE);

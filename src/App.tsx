@@ -1,18 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
 import { Loader2 } from "lucide-react";
-import { abrirSessaoComChave, aoPerderSessao, chamarApi, temSessao } from "./lib/api";
+import { abrirSessaoComChave, aoPerderSessao, temSessao } from "./lib/api";
 import AcessoNegado from "./pages/AcessoNegado";
 import Config from "./pages/Config";
 import Leads from "./pages/Leads";
 import Numeros from "./pages/Numeros";
-import Revisao from "./pages/Revisao";
 
 /**
  * Este painel roda embedado dentro do AIOS, que já tem cabeçalho, logo e
  * barra de navegação próprios. Por isso o app NÃO desenha nenhum dos três:
  * duas barras empilhadas denunciam que o conteúdo veio de fora. A navegação
- * entre as quatro telas é feita por abas em pílula, no padrão da plataforma.
+ * entre as três telas é feita por abas em pílula, no padrão da plataforma.
+ *
+ * A aba Revisão saiu a pedido do operador. A FILA de revisão não saiu: ela
+ * mora dentro da lista de Leads, com status próprio no filtro e um aviso com
+ * a contagem no topo (ver pages/Leads.tsx). A aba podia sair, a fila não —
+ * é ela que sustenta "perder lead é impossível por construção".
  */
 /**
  * Estados da porta de entrada. "verificando" é o instante entre montar e
@@ -106,7 +110,6 @@ export default function App() {
           <main>
             <Routes>
               <Route path="/" element={<Leads />} />
-              <Route path="/revisao" element={<Revisao />} />
               <Route path="/numeros" element={<Numeros />} />
               <Route path="/config" element={<Config />} />
             </Routes>
@@ -122,36 +125,17 @@ function classeDaAba({ isActive }: { isActive: boolean }): string {
 }
 
 /**
- * A fila de revisão é a única aba com contagem: ela acumula o que o parser
- * não conseguiu interpretar, e esse número é o que decide se alguém precisa
- * abrir a tela hoje. Selo numérico vermelho ao lado do rótulo, como o
- * "Novos 37" do AIOS. Se a contagem não puder ser lida, a aba simplesmente
- * não mostra selo nenhum: um número errado seria pior que nenhum.
+ * Três abas, sem contagem em nenhuma. O selo numérico vermelho existia por
+ * causa da fila de revisão, e foi junto com ela para dentro da tela de
+ * Leads, onde virou o aviso com a contagem no topo da lista: o número
+ * continua dizendo se alguém precisa parar para revisar hoje, só que ao lado
+ * dos itens que ele conta.
  */
 function Abas() {
-  const [pendentes, setPendentes] = useState(0);
-
-  useEffect(() => {
-    let ativo = true;
-    chamarApi("/api/revisao")
-      .then((resposta) => (resposta.ok ? resposta.json() : null))
-      .then((corpo: { itens?: unknown[] } | null) => {
-        if (ativo && Array.isArray(corpo?.itens)) setPendentes(corpo.itens.length);
-      })
-      .catch(() => {});
-    return () => {
-      ativo = false;
-    };
-  }, []);
-
   return (
     <nav className="abas" aria-label="Seções do painel">
       <NavLink to="/" end className={classeDaAba}>
         Leads
-      </NavLink>
-      <NavLink to="/revisao" className={classeDaAba}>
-        Revisão
-        {pendentes > 0 && <span className="aba-contagem">{pendentes}</span>}
       </NavLink>
       <NavLink to="/numeros" className={classeDaAba}>
         Números

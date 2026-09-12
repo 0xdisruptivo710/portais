@@ -20,6 +20,15 @@ export function rotuloPortal(portal: string): string {
   return (ROTULOS as Record<string, string>)[portal] ?? portal;
 }
 
+/**
+ * Status da linha que não veio de `portais_leads`: é o evento cru que nem o
+ * parser nem a IA conseguiram ler e que espera na fila de revisão
+ * (portais_eventos_raw.status = 'revisao'). Ele aparece na mesma lista de
+ * Leads desde que a aba própria saiu da navegação — a aba podia sair, a fila
+ * não: é ela que sustenta "perder lead é impossível por construção".
+ */
+export const STATUS_REVISAO = "revisao";
+
 export const STATUS_ATIVACAO_OPCOES = [
   { valor: "pendente", rotulo: "Pendente" },
   { valor: "dry_run", rotulo: "Simulado" },
@@ -28,6 +37,7 @@ export const STATUS_ATIVACAO_OPCOES = [
   // Estado que o drenador de fila (api/_lib/fila.ts) grava quando a ativação
   // de um lead estoura. Sem a opção aqui, esses leads sumiriam do filtro.
   { valor: "falhou", rotulo: "Falhou" },
+  { valor: STATUS_REVISAO, rotulo: "Precisa revisão" },
 ] as const;
 
 /**

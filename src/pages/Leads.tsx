@@ -1,17 +1,27 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   AlertTriangle,
   Ban,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Clock,
+  FileQuestion,
   FlaskConical,
   Loader2,
   SearchX,
 } from "lucide-react";
 import BotaoEnviar from "../components/BotaoEnviar";
+import PainelRevisao, { type EventoRevisao } from "../components/PainelRevisao";
 import { buscarJson } from "../lib/api";
-import { PORTAIS, rotuloPortal, rotuloStatus, STATUS_ATIVACAO_OPCOES } from "../lib/portais";
+import {
+  PORTAIS,
+  rotuloPortal,
+  rotuloStatus,
+  STATUS_ATIVACAO_OPCOES,
+  STATUS_REVISAO,
+} from "../lib/portais";
 
 interface LeadItem {
   id: number;
@@ -33,6 +43,28 @@ interface VendedorItem {
 }
 
 /**
+ * A linha da lista, venha ela de um lead ou de um evento que ainda espera
+ * revisão. As duas coisas convivem na mesma tabela desde que a aba Revisão
+ * saiu da navegação: o que o operador tem na frente é uma fila de trabalho,
+ * e um item ilegível é trabalho tanto quanto um lead pronto.
+ */
+interface Linha {
+  chave: string;
+  tipo: "lead" | "revisao";
+  id: number;
+  portal: string;
+  nome: string | null;
+  telefoneE164: string | null;
+  telefoneExibicao: string | null;
+  /** Veículo, no lead; assunto do e-mail, no item de revisão. */
+  resumo: string | null;
+  vendedor: string | null;
+  status: string;
+  data: string | null;
+  evento: EventoRevisao | null;
+}
+
+/**
  * O endpoint /api/leads aceita `?portal=` e `?vendedor=` nativamente: esses
  * dois filtros vão na query, não em memória (filtrar em memória sobre só os
  * 50 mais recentes escondia lead que não coubesse nessa primeira página, e no
@@ -42,12 +74,14 @@ interface VendedorItem {
  * endpoint pra esses dois.
  *
  * Lista longa: densidade importa mais que respiro. A linha tem que entregar,
- * de relance, portal, nome, telefone, veículo e o estado do envio.
+ * de relance, portal, nome, telefone, veículo, dono e o estado do envio.
  */
 export default function Leads() {
   const [itens, setItens] = useState<LeadItem[]>([]);
+  const [revisao, setRevisao] = useState<EventoRevisao[]>([]);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
+  const [expandido, setExpandido] = useState<number | null>(null);
 
   const [portalFiltro, setPortalFiltro] = useState("");
   const [vendedorFiltro, setVendedorFiltro] = useState("");
@@ -55,6 +89,9 @@ export default function Leads() {
   const [inicioFiltro, setInicioFiltro] = useState("");
   const [fimFiltro, setFimFiltro] = useState("");
   const [vendedores, setVendedores] = useState<VendedorItem[]>([]);
+  // Trocar a geração refaz a busca dos leads. É o que traz para a lista o
+  // lead que acabou de nascer de uma revisão completada.
+  const [geracao, setGeracao] = useState(0);
 
   // A lista de vendedores é um detalhe do seletor, não a tela: se ela falhar,
   // o filtro fica só com "Todos" e os leads continuam aparecendo. Derrubar a
@@ -70,6 +107,20 @@ export default function Leads() {
       ativo = false;
     };
   }, []);
+
+  // Mesma disciplina para a fila de revisão: ela é uma segunda fonte na mesma
+  // tela, e uma falha aqui não pode levar embora a lista de leads.
+  useEffect(() => {
+    let ativo = true;
+    buscarJson<{ itens: EventoRevisao[] }>("/api/revisao")
+      .then((resposta) => {
+        if (ativo && Array.isArray(resposta.itens)) setRevisao(resposta.itens);
+      })
+      .catch(() => {});
+    return () => {
+      ativo = false;
+    };
+  }, [geracao]);
 
   useEffect(() => {
     let ativo = true;
@@ -87,20 +138,62 @@ export default function Leads() {
     return () => {
       ativo = false;
     };
-  }, [portalFiltro, vendedorFiltro]);
+  }, [portalFiltro, vendedorFiltro, geracao]);
 
-  const itensFiltrados = useMemo(() => {
-    return itens.filter((item) => {
-      if (statusFiltro && item.status_ativacao !== statusFiltro) return false;
-      const dataItem = item.capturado_em ?? item.created_at ?? null;
-      if (dataItem) {
-        const dia = dataItem.slice(0, 10);
+  const linhas = useMemo(() => {
+    const deLeads: Linha[] = itens.map((item) => ({
+      chave: `lead-${item.id}`,
+      tipo: "lead",
+      id: item.id,
+      portal: item.portal,
+      nome: item.nome,
+      telefoneE164: item.telefone_e164 ?? null,
+      telefoneExibicao: item.telefone_exibicao,
+      resumo: item.veiculo_texto,
+      vendedor: item.vendedor ?? null,
+      status: item.status_ativacao ?? "pendente",
+      data: item.capturado_em ?? item.created_at ?? null,
+      evento: null,
+    }));
+
+    // Item de revisão ainda não é lead: não tem telefone lido nem dono. Com
+    // filtro de vendedor ligado ele some da tabela (não é de ninguém), e é
+    // por isso que o aviso do topo conta a fila inteira, independente do
+    // filtro: a fila de segurança nunca pode ficar invisível.
+    const deRevisao: Linha[] = vendedorFiltro
+      ? []
+      : revisao.map((evento) => ({
+          chave: `revisao-${evento.id}`,
+          tipo: "revisao",
+          id: evento.id,
+          portal: evento.portal,
+          nome: null,
+          telefoneE164: null,
+          telefoneExibicao: null,
+          resumo: evento.assunto,
+          vendedor: null,
+          status: STATUS_REVISAO,
+          data: evento.recebido_em,
+          evento,
+        }));
+
+    // Ordem cronológica única para as duas fontes: o item de revisão é do dia
+    // em que o e-mail chegou, e tirá-lo da linha do tempo esconderia que ele
+    // está parado desde a semana passada.
+    return [...deLeads, ...deRevisao].sort((a, b) => (b.data ?? "").localeCompare(a.data ?? ""));
+  }, [itens, revisao, vendedorFiltro]);
+
+  const linhasFiltradas = useMemo(() => {
+    return linhas.filter((linha) => {
+      if (statusFiltro && linha.status !== statusFiltro) return false;
+      if (linha.data) {
+        const dia = linha.data.slice(0, 10);
         if (inicioFiltro && dia < inicioFiltro) return false;
         if (fimFiltro && dia > fimFiltro) return false;
       }
       return true;
     });
-  }, [itens, statusFiltro, inicioFiltro, fimFiltro]);
+  }, [linhas, statusFiltro, inicioFiltro, fimFiltro]);
 
   const temFiltro = Boolean(portalFiltro || vendedorFiltro || statusFiltro || inicioFiltro || fimFiltro);
 
@@ -115,6 +208,18 @@ export default function Leads() {
     );
   }
 
+  /**
+   * O evento sai da fila e a lista de leads é refeita: o lead que a pessoa
+   * acabou de completar nasceu agora no banco e não estava na resposta
+   * anterior. Aqui vale recarregar (ao contrário do envio, que só muda o
+   * estado de uma linha que já está na tela).
+   */
+  function aoCompletarRevisao(eventoId: number) {
+    setRevisao((atuais) => atuais.filter((evento) => evento.id !== eventoId));
+    setExpandido(null);
+    setGeracao((anterior) => anterior + 1);
+  }
+
   function limparFiltros() {
     setPortalFiltro("");
     setVendedorFiltro("");
@@ -123,7 +228,12 @@ export default function Leads() {
     setFimFiltro("");
   }
 
-  const contagem = itensFiltrados.length === 1 ? "1 lead" : `${itensFiltrados.length} leads`;
+  function verRevisao() {
+    setVendedorFiltro("");
+    setStatusFiltro(STATUS_REVISAO);
+  }
+
+  const contagem = linhasFiltradas.length === 1 ? "1 lead" : `${linhasFiltradas.length} leads`;
 
   return (
     <section className="flex flex-col gap-4">
@@ -221,6 +331,24 @@ export default function Leads() {
         </div>
       </div>
 
+      {/* A aba Revisão tinha um selo numérico vermelho, e era ele que dizia se
+          alguém precisava abrir aquela tela hoje. A aba saiu; o número não
+          podia sair junto, senão a fila de segurança ficaria invisível até
+          alguém pensar em procurar por ela. */}
+      {revisao.length > 0 && statusFiltro !== STATUS_REVISAO && (
+        <div className="faixa-atencao items-center justify-between gap-3">
+          <span className="flex items-start gap-2">
+            <FileQuestion aria-hidden="true" className="mt-px h-4 w-4 shrink-0" />
+            {revisao.length === 1
+              ? "1 lead precisa de revisão: o e-mail chegou, mas o sistema não conseguiu ler os dados."
+              : `${revisao.length} leads precisam de revisão: o e-mail chegou, mas o sistema não conseguiu ler os dados.`}
+          </span>
+          <button type="button" className="botao shrink-0" onClick={verRevisao}>
+            Ver os que precisam de revisão
+          </button>
+        </div>
+      )}
+
       {erro && (
         <p role="alert" className="faixa-erro">
           <AlertCircle aria-hidden="true" className="mt-px h-4 w-4 shrink-0" />
@@ -233,7 +361,7 @@ export default function Leads() {
           <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
           Carregando leads...
         </p>
-      ) : itensFiltrados.length === 0 ? (
+      ) : linhasFiltradas.length === 0 ? (
         <div className="estado-vazio">
           <SearchX aria-hidden="true" className="h-6 w-6 text-aios-texto-suave" />
           <p className="estado-vazio-titulo">Nenhum lead encontrado com esse filtro.</p>
@@ -256,42 +384,73 @@ export default function Leads() {
               </tr>
             </thead>
             <tbody>
-              {itensFiltrados.map((item) => (
-                <tr key={item.id}>
-                  <td>
-                    <span className="selo">{rotuloPortal(item.portal)}</span>
-                  </td>
-                  <td className="font-medium">{item.nome ?? <Ausente texto="sem nome" />}</td>
-                  <td className="whitespace-nowrap tabular-nums">
-                    {item.telefone_exibicao ?? <Ausente texto="sem telefone" />}
-                  </td>
-                  {/* Linha de resumo do item, em violeta: é o detalhe que dá o
-                      tom das listas do AIOS. */}
-                  <td className="previa-linha min-w-[180px]">
-                    {item.veiculo_texto ?? <Ausente texto="sem veículo" />}
-                  </td>
-                  {/* Sem esta coluna, a divisão do trabalho só existiria
-                      dentro do filtro: a lista com "Todos" não diria de quem
-                      é cada lead. */}
-                  <td className="whitespace-nowrap">
-                    {item.vendedor ?? <Ausente texto="sem vendedor" />}
-                  </td>
-                  <td>
-                    <SeloStatus status={item.status_ativacao} />
-                  </td>
-                  {/* Sem telefone não existe para onde enviar (é o caso de OLX e
-                      Mercado Livre, que não entregam o número no e-mail): a
-                      célula fica vazia em vez de oferecer um botão que só
-                      produziria erro. */}
-                  <td>
-                    {(item.telefone_e164 ?? item.telefone_exibicao) ? (
-                      <BotaoEnviar
-                        leadId={item.id}
-                        aoEnviar={(statusAtivacao) => aplicarStatus(item.id, statusAtivacao)}
-                      />
-                    ) : null}
-                  </td>
-                </tr>
+              {linhasFiltradas.map((linha) => (
+                <Fragment key={linha.chave}>
+                  <tr>
+                    <td>
+                      <span className="selo">{rotuloPortal(linha.portal)}</span>
+                    </td>
+                    <td className="font-medium">{linha.nome ?? <Ausente texto="sem nome" />}</td>
+                    <td className="whitespace-nowrap tabular-nums">
+                      {linha.telefoneExibicao ?? <Ausente texto="sem telefone" />}
+                    </td>
+                    {/* Linha de resumo do item, em violeta: é o detalhe que dá o
+                        tom das listas do AIOS. No item de revisão, o resumo
+                        possível é o assunto do e-mail. */}
+                    <td className="previa-linha min-w-[180px]">
+                      {linha.resumo ?? <Ausente texto={linha.tipo === "revisao" ? "sem assunto" : "sem veículo"} />}
+                    </td>
+                    {/* Sem esta coluna, a divisão do trabalho só existiria
+                        dentro do filtro: a lista com "Todos" não diria de quem
+                        é cada lead. */}
+                    <td className="whitespace-nowrap">
+                      {linha.vendedor ?? <Ausente texto="sem vendedor" />}
+                    </td>
+                    <td>
+                      <SeloStatus status={linha.status} />
+                    </td>
+                    <td>
+                      {linha.tipo === "revisao" ? (
+                        <button
+                          type="button"
+                          className="botao botao-acao"
+                          aria-expanded={expandido === linha.id}
+                          onClick={() => setExpandido(expandido === linha.id ? null : linha.id)}
+                        >
+                          {expandido === linha.id ? (
+                            <ChevronDown aria-hidden="true" className="h-3.5 w-3.5" />
+                          ) : (
+                            <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
+                          )}
+                          Revisar
+                        </button>
+                      ) : /* Sem telefone não existe para onde enviar (é o caso de
+                            OLX e Mercado Livre, que não entregam o número no
+                            e-mail): a célula fica vazia em vez de oferecer um
+                            botão que só produziria erro. */
+                      linha.telefoneE164 ?? linha.telefoneExibicao ? (
+                        <BotaoEnviar
+                          leadId={linha.id}
+                          aoEnviar={(statusAtivacao) => aplicarStatus(linha.id, statusAtivacao)}
+                        />
+                      ) : null}
+                    </td>
+                  </tr>
+                  {/* Linha expansível, e não janela sobreposta: o operador está
+                      lendo uma fila, e o item precisa continuar no lugar dele
+                      enquanto o e-mail é lido. Uma janela esconderia a lista,
+                      exigiria foco próprio e devolveria o operador ao topo. */}
+                  {linha.tipo === "revisao" && expandido === linha.id && linha.evento && (
+                    <tr>
+                      <td colSpan={7} className="bg-aios-fundo/60 p-3">
+                        <PainelRevisao
+                          evento={linha.evento}
+                          aoCompletar={() => aoCompletarRevisao(linha.id)}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>
@@ -340,6 +499,8 @@ function aparenciaDoStatus(status: string | null) {
       return { classe: "selo-atencao", Icone: Ban };
     case "falhou":
       return { classe: "selo-erro", Icone: AlertTriangle };
+    case STATUS_REVISAO:
+      return { classe: "selo-atencao", Icone: FileQuestion };
     case "dry_run":
       return { classe: "", Icone: FlaskConical };
     default:

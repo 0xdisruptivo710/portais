@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import Leads from "./Leads";
@@ -242,5 +242,152 @@ describe("tela de leads: filtro por vendedor", () => {
     expect(await screen.findByText("Fulano")).toBeInTheDocument();
     const seletor = screen.getByLabelText(/vendedor/i);
     expect(within(seletor).getAllByRole("option")).toHaveLength(1);
+  });
+});
+
+const EVENTO_REVISAO = {
+  id: 9,
+  portal: "comprecar",
+  assunto: "Contato do anuncio 4471",
+  remetente: "leads@comprecar.com.br",
+  recebido_em: "2026-09-11T10:00:00Z",
+  corpo_texto: "corpo em texto",
+  corpo_html: "<p>corpo</p>",
+};
+
+/**
+ * Roteia leads, vendedores e a fila de revisao. A aba Revisao saiu da
+ * navegacao, mas a fila continua existindo dentro desta lista: e' a rede de
+ * seguranca que faz "perder lead" ser impossivel por construcao.
+ */
+function mockarApiCompleta(leads: unknown[], revisao: unknown[]) {
+  // A fila do servidor e' estado, nao constante: completar uma revisao tira o
+  // evento de la'. Sem isso o mock devolveria o item completado de volta na
+  // releitura e esconderia se a tela esta' certa ou errada.
+  let fila = [...revisao] as { id: number }[];
+  const f = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.startsWith("/api/vendedores")) {
+      return { ok: true, status: 200, json: async () => ({ itens: VENDEDORES }) };
+    }
+    if (url.startsWith("/api/revisao")) {
+      if (init?.method === "POST") {
+        const corpo = JSON.parse(String(init.body)) as { evento_id: number };
+        fila = fila.filter((evento) => evento.id !== corpo.evento_id);
+        return { ok: true, status: 201, json: async () => ({ id: 77 }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ itens: fila }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ itens: leads }) };
+  });
+  vi.stubGlobal("fetch", f);
+  return f;
+}
+
+describe("tela de leads: a fila de revisao mora aqui", () => {
+  it("item que nem o parser nem a IA leram aparece na lista, com status proprio", async () => {
+    mockarApiCompleta([], [EVENTO_REVISAO]);
+    render(<Leads />);
+
+    const tabela = await screen.findByRole("table");
+    expect(within(tabela).getByText(/contato do anuncio 4471/i)).toBeInTheDocument();
+    expect(within(tabela).getByText(/precisa revis/i)).toBeInTheDocument();
+  });
+
+  // O selo vermelho saiu da aba junto com a aba. Sem um lugar que conte, a
+  // fila de seguranca fica invisivel ate' alguem pensar em procurar por ela.
+  it("um aviso no topo diz quantos estao esperando revisao", async () => {
+    mockarApiCompleta([LEAD_COM_TELEFONE], [EVENTO_REVISAO, { ...EVENTO_REVISAO, id: 10 }]);
+    render(<Leads />);
+
+    expect(await screen.findByText(/2 leads precisam de revis/i)).toBeInTheDocument();
+  });
+
+  it("sem nada na fila, nao existe aviso nenhum", async () => {
+    mockarApiCompleta([LEAD_COM_TELEFONE], []);
+    render(<Leads />);
+
+    await screen.findByText("Fulano");
+    expect(screen.queryByText(/precisam de revis/i)).not.toBeInTheDocument();
+  });
+
+  it("o filtro de status isola quem precisa de revisao", async () => {
+    mockarApiCompleta([LEAD_COM_TELEFONE], [EVENTO_REVISAO]);
+    render(<Leads />);
+    await screen.findByText("Fulano");
+
+    await userEvent.selectOptions(screen.getByLabelText(/^status$/i), "revisao");
+
+    const tabela = screen.getByRole("table");
+    expect(within(tabela).getByText(/contato do anuncio 4471/i)).toBeInTheDocument();
+    expect(within(tabela).queryByText("Fulano")).not.toBeInTheDocument();
+  });
+
+  it("o aviso leva direto para eles", async () => {
+    mockarApiCompleta([LEAD_COM_TELEFONE], [EVENTO_REVISAO]);
+    render(<Leads />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /ver os que precisam de revis/i }));
+
+    const tabela = screen.getByRole("table");
+    expect(within(tabela).queryByText("Fulano")).not.toBeInTheDocument();
+    expect(within(tabela).getByText(/contato do anuncio 4471/i)).toBeInTheDocument();
+  });
+
+  it("a linha abre com o e-mail original isolado e o formulario de completar", async () => {
+    mockarApiCompleta([], [EVENTO_REVISAO]);
+    const { container } = render(<Leads />);
+    await screen.findByRole("table");
+
+    await userEvent.click(screen.getByRole("button", { name: /revisar/i }));
+
+    const iframe = container.querySelector("iframe");
+    expect(iframe?.getAttribute("sandbox")).toBe("");
+    expect(screen.getByRole("button", { name: /completar revis/i })).toBeInTheDocument();
+  });
+
+  it("completar a revisao tira a linha da fila e recarrega a lista de leads", async () => {
+    const f = mockarApiCompleta([], [EVENTO_REVISAO]);
+    render(<Leads />);
+    await screen.findByRole("table");
+    await userEvent.click(screen.getByRole("button", { name: /revisar/i }));
+    const chamadasAntes = f.mock.calls.filter((c) => String(c[0]).startsWith("/api/leads")).length;
+
+    await userEvent.click(screen.getByRole("button", { name: /completar revis/i }));
+
+    await waitFor(() => expect(screen.queryByText(/contato do anuncio 4471/i)).not.toBeInTheDocument());
+    // O lead corrigido acabou de nascer no banco: a lista precisa ir buscar.
+    await waitFor(() =>
+      expect(f.mock.calls.filter((c) => String(c[0]).startsWith("/api/leads")).length).toBeGreaterThan(
+        chamadasAntes,
+      ),
+    );
+  });
+
+  // Item de revisao ainda nao e' lead: nao tem dono. Filtrar por vendedor
+  // esconde a linha, e por isso o aviso continua contando a fila inteira.
+  it("com filtro de vendedor a linha some, mas o aviso continua contando", async () => {
+    mockarApiCompleta([], [EVENTO_REVISAO]);
+    render(<Leads />);
+    await screen.findByRole("table");
+
+    await userEvent.selectOptions(screen.getByLabelText(/vendedor/i), "Beatryz");
+
+    expect(screen.queryByText(/contato do anuncio 4471/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/1 lead precisa de revis/i)).toBeInTheDocument();
+  });
+
+  // A fila e' acessorio da lista: se ela falhar, os leads continuam na tela.
+  it("falha ao ler a fila de revisao nao derruba a lista de leads", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.startsWith("/api/revisao")) return { ok: false, status: 500, json: async () => ({ erro: "boom" }) };
+        if (url.startsWith("/api/vendedores")) return { ok: true, status: 200, json: async () => ({ itens: VENDEDORES }) };
+        return { ok: true, status: 200, json: async () => ({ itens: [LEAD_COM_TELEFONE] }) };
+      }),
+    );
+    render(<Leads />);
+
+    expect(await screen.findByText("Fulano")).toBeInTheDocument();
   });
 });
