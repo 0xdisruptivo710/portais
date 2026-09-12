@@ -1,5 +1,6 @@
 import { ativarLeadDetalhado, previaDeEnvio } from "./_lib/ativacao.js";
 import { erro, json } from "./_lib/http.js";
+import { exigirOrigemConfiavel } from "./_lib/origem.js";
 import { exigirAdmin } from "./_lib/sessao.js";
 import { ErroWts } from "./_lib/wts.js";
 
@@ -45,6 +46,11 @@ export async function POST(request: Request): Promise<Response> {
   // Mesma guarda do GET: sessão é a primeira coisa, antes de tocar no banco.
   const barrado = exigirAdmin(request);
   if (barrado) return barrado;
+
+  // Atrás desta linha sai WhatsApp para cliente real. É o endpoint que mais
+  // precisa da conferência de origem, agora que o cookie é SameSite=None.
+  const forasteiro = exigirOrigemConfiavel(request);
+  if (forasteiro) return forasteiro;
 
   let corpo: unknown;
   try {

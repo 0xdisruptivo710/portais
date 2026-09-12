@@ -21,8 +21,19 @@ function comSessao(url: string, init: RequestInit = {}): Request {
   const cookie = `${COOKIE_ADMIN}=${assinarSessao(Date.now() + 60_000, SEGREDO_SESSAO)}`;
   return new Request(url, {
     ...init,
-    headers: { ...((init.headers ?? {}) as Record<string, string>), cookie },
+    headers: { ...padroesDeEscrita(init.method), ...((init.headers ?? {}) as Record<string, string>), cookie },
   });
+}
+
+/**
+ * O que o navegador manda sozinho numa escrita vinda do proprio painel:
+ * Origin (so' em metodo que nao e' GET/HEAD) e o content-type do fetch. Sem
+ * os dois, exigirOrigemConfiavel recusa - que e' a defesa de CSRF que veio
+ * junto com o cookie SameSite=None.
+ */
+function padroesDeEscrita(metodo: string | undefined): Record<string, string> {
+  if (!metodo || metodo.toUpperCase() === "GET") return {};
+  return { origin: "https://x", "content-type": "application/json" };
 }
 
 function enviar(corpo: unknown): Promise<Response> {
@@ -366,5 +377,52 @@ describe("GET /api/enviar: previa da mensagem", () => {
 
     expect(resposta.status).toBe(400);
     expect(vi.mocked(getSupabase)).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * O cookie de sessao virou SameSite=None para sobreviver ao iframe do AIOS,
+ * e com isso o navegador passou a manda-lo junto de requisicao disparada por
+ * qualquer pagina da internet. A sessao sozinha nao prova mais que quem
+ * pediu foi o painel: quem prova e' a conferencia de origem.
+ */
+describe("guarda de origem de POST /api/enviar", () => {
+  // Este e' o endpoint que manda WhatsApp para cliente real. Se a conferencia
+  // de origem falhar aqui, uma pagina maliciosa aberta no navegador do
+  // operador dispara mensagem da linha da loja.
+  it("Origin desconhecida e' recusada com 403, sem tocar no banco nem na rede", async () => {
+    mockarSupabase({ lead: { ...LEAD_BASE }, cfg: { ...CFG_BASE } });
+    const resposta = await POST(
+      comSessao("https://x/api/enviar", {
+        method: "POST",
+        headers: { origin: "https://site-malicioso.com" },
+        body: JSON.stringify({ leadId: 7 }),
+      }),
+    );
+
+    expect(resposta.status).toBe(403);
+    expect(vi.mocked(getSupabase)).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("sem content-type application/json e' recusada com 415, sem tocar na rede", async () => {
+    mockarSupabase({ lead: { ...LEAD_BASE }, cfg: { ...CFG_BASE } });
+    const resposta = await POST(
+      comSessao("https://x/api/enviar", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: "leadId=7",
+      }),
+    );
+
+    expect(resposta.status).toBe(415);
+    expect(vi.mocked(getSupabase)).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("GET da previa nao e' afetado: passa sem Origin nenhum", async () => {
+    mockarSupabase({ lead: { ...LEAD_BASE }, cfg: { ...CFG_BASE } });
+    const resposta = await GET(comSessao("https://x/api/enviar?leadId=7"));
+    expect(resposta.status).toBe(200);
   });
 });

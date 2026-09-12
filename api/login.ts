@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { erro } from "./_lib/http.js";
+import { exigirOrigemConfiavel } from "./_lib/origem.js";
 import { cabecalhoSessao } from "./_lib/sessao.js";
 
 /**
@@ -12,6 +13,12 @@ import { cabecalhoSessao } from "./_lib/sessao.js";
  * adivinhar.
  */
 export async function POST(request: Request): Promise<Response> {
+  // Trocar senha por cookie também é mudar estado, e este é o endpoint que
+  // um site de terceiro tentaria usar para plantar uma sessão no navegador
+  // do operador.
+  const forasteiro = exigirOrigemConfiavel(request);
+  if (forasteiro) return forasteiro;
+
   const senhaEsperada = process.env.ADMIN_SENHA;
   const segredo = process.env.ADMIN_SESSION_SECRET;
   if (!senhaEsperada || !segredo) return erro("painel nao configurado", 500);

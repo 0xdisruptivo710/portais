@@ -48,11 +48,25 @@ describe("sessao do painel", () => {
     expect(sessaoValida("a.b", SEGREDO)).toBe(false);
   });
 
-  it("o cookie que a funcao emite e' HttpOnly, Secure e SameSite", () => {
+  it("o cookie que a funcao emite e' HttpOnly e Secure", () => {
     const cabecalho = cabecalhoSessao(SEGREDO);
     expect(cabecalho).toContain("HttpOnly");
     expect(cabecalho).toContain("Secure");
-    expect(cabecalho).toContain("SameSite=Strict");
+  });
+
+  it("o cookie e' SameSite=None, o unico valor que sobrevive ao iframe", () => {
+    // Navegador nenhum devolve cookie Strict (nem Lax) numa requisicao feita
+    // dentro de um iframe de outro site. Embedado no AIOS, Strict gravava o
+    // cookie e devolvia 401 em toda chamada seguinte, para sempre.
+    const cabecalho = cabecalhoSessao(SEGREDO);
+    expect(cabecalho).toContain("SameSite=None");
+    expect(cabecalho).not.toContain("SameSite=Strict");
+    expect(cabecalho).not.toContain("SameSite=Lax");
+  });
+
+  it("SameSite=None exige Secure: sem ele o navegador descarta o cookie", () => {
+    const cabecalho = cabecalhoSessao(SEGREDO);
+    expect(/SameSite=None/.test(cabecalho) && /Secure/.test(cabecalho)).toBe(true);
   });
 });
 

@@ -10,7 +10,9 @@ function entrar(corpo: unknown): Promise<Response> {
   return handler(
     new Request("https://x/api/login", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      // Origin e content-type sao o que o navegador manda sozinho, e o que
+      // exigirOrigemConfiavel passou a exigir junto com o SameSite=None.
+      headers: { "content-type": "application/json", origin: "https://x" },
       body: JSON.stringify(corpo),
     }),
   );
@@ -55,7 +57,13 @@ describe("POST /api/login", () => {
     expect((await entrar({})).status).toBe(401);
     expect((await entrar(null)).status).toBe(401);
 
-    const r = await handler(new Request("https://x/api/login", { method: "POST", body: "{invalido" }));
+    const r = await handler(
+      new Request("https://x/api/login", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "https://x" },
+        body: "{invalido",
+      }),
+    );
     expect(r.status).toBe(401);
   });
 
@@ -74,4 +82,38 @@ describe("POST /api/login", () => {
   // "So aceita POST" nao e mais responsabilidade deste modulo: so POST e
   // exportado, e a Vercel responde 405 sozinha (com Allow) quando o metodo
   // da requisicao nao bate com nenhum export nomeado do arquivo.
+});
+
+/**
+ * O cookie de sessao virou SameSite=None para sobreviver ao iframe do AIOS,
+ * e com isso o navegador passou a manda-lo junto de requisicao disparada por
+ * qualquer pagina da internet. A sessao sozinha nao prova mais que quem
+ * pediu foi o painel: quem prova e' a conferencia de origem.
+ */
+describe("guarda de origem de POST /api/login", () => {
+  it("Origin desconhecida e' recusada com 403 e sem cookie", async () => {
+    const r = await handler(
+      new Request("https://x/api/login", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "https://site-malicioso.com" },
+        body: JSON.stringify({ senha: SENHA }),
+      }),
+    );
+
+    expect(r.status).toBe(403);
+    expect(r.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("sem content-type application/json e' recusada com 415 e sem cookie", async () => {
+    const r = await handler(
+      new Request("https://x/api/login", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", origin: "https://x" },
+        body: `senha=${SENHA}`,
+      }),
+    );
+
+    expect(r.status).toBe(415);
+    expect(r.headers.get("set-cookie")).toBeNull();
+  });
 });

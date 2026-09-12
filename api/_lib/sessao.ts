@@ -31,9 +31,21 @@ export function sessaoValida(cookie: string | null, segredo: string, agora = Dat
   return Number(payload) > agora;
 }
 
+/**
+ * SameSite=None porque o painel roda embedado num iframe do AIOS, e navegador
+ * nenhum devolve cookie Strict (nem Lax) numa requisição feita dentro de um
+ * iframe de outro site. Com Strict, o login gravava o cookie e toda chamada
+ * seguinte voltava 401, para sempre. `None` é o único valor que funciona ali,
+ * e exige `Secure` (que já estava).
+ *
+ * `None` também faz o navegador mandar o cookie junto de requisições
+ * disparadas por qualquer página da internet, o que abre CSRF. Isso não fica
+ * em branco: quem paga essa conta é exigirOrigemConfiavel (origem.ts), nos
+ * endpoints que mudam estado.
+ */
 export function cabecalhoSessao(segredo: string): string {
   const cookie = assinarSessao(Date.now() + DURACAO_MS, segredo);
-  return `${COOKIE_ADMIN}=${cookie}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${DURACAO_MS / 1000}`;
+  return `${COOKIE_ADMIN}=${cookie}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${DURACAO_MS / 1000}`;
 }
 
 /**

@@ -1,4 +1,5 @@
 import { erro, json } from "./_lib/http.js";
+import { exigirOrigemConfiavel } from "./_lib/origem.js";
 import { exigirAdmin } from "./_lib/sessao.js";
 import { getSupabase } from "./_lib/supabase.js";
 
@@ -57,6 +58,12 @@ export async function PUT(request: Request): Promise<Response> {
   // Mesma guarda do GET: sessão é a primeira coisa, antes de tocar no banco.
   const barrado = exigirAdmin(request);
   if (barrado) return barrado;
+
+  // SameSite=None manda o cookie junto de requisicao disparada por qualquer
+  // pagina. A sessao sozinha nao prova mais que quem pediu foi o painel.
+  const forasteiro = exigirOrigemConfiavel(request);
+  if (forasteiro) return forasteiro;
+
   return atualizar(request);
 }
 

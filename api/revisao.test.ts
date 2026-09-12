@@ -22,8 +22,19 @@ function comSessao(url: string, init: RequestInit = {}): Request {
   const cookie = `${COOKIE_ADMIN}=${assinarSessao(Date.now() + 60_000, SEGREDO_SESSAO)}`;
   return new Request(url, {
     ...init,
-    headers: { ...((init.headers ?? {}) as Record<string, string>), cookie },
+    headers: { ...padroesDeEscrita(init.method), ...((init.headers ?? {}) as Record<string, string>), cookie },
   });
+}
+
+/**
+ * O que o navegador manda sozinho numa escrita vinda do proprio painel:
+ * Origin (so' em metodo que nao e' GET/HEAD) e o content-type do fetch. Sem
+ * os dois, exigirOrigemConfiavel recusa - que e' a defesa de CSRF que veio
+ * junto com o cookie SameSite=None.
+ */
+function padroesDeEscrita(metodo: string | undefined): Record<string, string> {
+  if (!metodo || metodo.toUpperCase() === "GET") return {};
+  return { origin: "https://x", "content-type": "application/json" };
 }
 
 
@@ -208,5 +219,47 @@ describe("guarda de sessao de /api/revisao", () => {
     delete process.env.ADMIN_SESSION_SECRET;
     const r = await GET(comSessao("https://x/api/revisao"));
     expect(r.status).toBe(500);
+  });
+});
+
+/**
+ * O cookie de sessao virou SameSite=None para sobreviver ao iframe do AIOS,
+ * e com isso o navegador passou a manda-lo junto de requisicao disparada por
+ * qualquer pagina da internet. A sessao sozinha nao prova mais que quem
+ * pediu foi o painel: quem prova e' a conferencia de origem.
+ */
+describe("guarda de origem de POST /api/revisao", () => {
+  it("Origin desconhecida e' recusada com 403, sem tocar no banco", async () => {
+    mockarSupabase();
+    const r = await POST(
+      comSessao("https://x/api/revisao", {
+        method: "POST",
+        headers: { origin: "https://site-malicioso.com" },
+        body: JSON.stringify({ evento_id: 1, nome: "Fulano" }),
+      }),
+    );
+
+    expect(r.status).toBe(403);
+    expect(vi.mocked(getSupabase)).not.toHaveBeenCalled();
+  });
+
+  it("sem content-type application/json e' recusada com 415", async () => {
+    mockarSupabase();
+    const r = await POST(
+      comSessao("https://x/api/revisao", {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: JSON.stringify({ evento_id: 1 }),
+      }),
+    );
+
+    expect(r.status).toBe(415);
+    expect(vi.mocked(getSupabase)).not.toHaveBeenCalled();
+  });
+
+  it("GET nao e' afetado: passa sem Origin nenhum", async () => {
+    mockarSupabase();
+    const r = await GET(comSessao("https://x/api/revisao"));
+    expect(r.status).toBe(200);
   });
 });
