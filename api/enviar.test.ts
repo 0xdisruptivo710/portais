@@ -164,9 +164,22 @@ function mockarSupabase(estado: EstadoFrom = {}) {
   return construido;
 }
 
-function mockarFetchWts(statusDaMensagem: unknown = { status: "DELIVERED" }) {
+const CONTATO_WTS = "contato-1";
+
+/**
+ * Rotas do WTS que o endpoint toca num envio manual: a conferência de
+ * conversa aberta (contato + sessões), o envio e a conferência de status.
+ * Separadas porque cada teste afirma coisas diferentes sobre cada uma.
+ */
+function mockarFetchWts(statusDaMensagem: unknown = { status: "DELIVERED" }, sessoes: unknown[] = []) {
   fetchMock.mockImplementation(async (url: unknown) => {
     const alvo = String(url);
+    if (alvo.includes("/core/v1/contact/phonenumber/")) {
+      return { ok: true, text: async () => JSON.stringify({ id: CONTATO_WTS }) };
+    }
+    if (alvo.includes("/chat/v2/session")) {
+      return { ok: true, text: async () => JSON.stringify({ items: sessoes }) };
+    }
     if (alvo.endsWith("/chat/v1/message/send")) {
       return { ok: true, text: async () => JSON.stringify({ id: "msg-1", status: "QUEUED" }) };
     }
@@ -179,6 +192,11 @@ function mockarFetchWts(statusDaMensagem: unknown = { status: "DELIVERED" }) {
 
 function chamadasDeEnvio(): unknown[] {
   return fetchMock.mock.calls.filter((c) => String(c[0]).endsWith("/chat/v1/message/send"));
+}
+
+/** Sessão do contato com mensagem no instante pedido. */
+function sessao(quando: string) {
+  return { contactId: CONTATO_WTS, lastMessageIn: quando, status: "OPEN" };
 }
 
 beforeEach(() => {
@@ -333,7 +351,18 @@ describe("POST /api/enviar: caminho feliz", () => {
   it("falha do WTS vira erro legivel, nao um sucesso silencioso", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
-    fetchMock.mockResolvedValue({ ok: false, status: 422, text: async () => "numero invalido" });
+    fetchMock.mockImplementation(async (url: unknown) => {
+      const alvo = String(url);
+      // A conferência de conversa aberta passa: quem recusa é o ENVIO, que é
+      // o que este teste mede.
+      if (alvo.includes("/core/v1/contact/phonenumber/")) {
+        return { ok: true, text: async () => JSON.stringify({ id: CONTATO_WTS }) };
+      }
+      if (alvo.includes("/chat/v2/session")) {
+        return { ok: true, text: async () => JSON.stringify({ items: [] }) };
+      }
+      return { ok: false, status: 422, text: async () => "numero invalido" };
+    });
     mockarSupabase();
 
     const resposta = await enviar({ leadId: 7 });
@@ -341,6 +370,113 @@ describe("POST /api/enviar: caminho feliz", () => {
 
     expect(resposta.status).toBe(502);
     expect(String(corpo.erro)).toContain("422");
+  });
+});
+
+/**
+ * A guarda que faltava, vista da ponta do endpoint: o telefone já está
+ * conversando com a loja e o botão de primeiro contato não pode atravessar a
+ * negociação. Aconteceu em produção.
+ */
+describe("POST /api/enviar: conversa ja aberta no WTS", () => {
+  it("suprime, devolve o motivo legivel e NAO manda mensagem", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
+    mockarFetchWts({ status: "DELIVERED" }, [sessao("2026-09-10T11:00:00-03:00")]);
+    const { chamadasUpdateLead } = mockarSupabase();
+
+    const corpo = await (await enviar({ leadId: 7 })).json();
+
+    expect(corpo.enviado).toBe(false);
+    expect(corpo.acao).toBe("suprimido");
+    expect(corpo.motivo).toBe("ja existe conversa no WTS, ultima mensagem ha 2h");
+    expect(chamadasDeEnvio()).toHaveLength(0);
+    expect(chamadasUpdateLead.find((c) => c.status_ativacao === "suprimido")).toBeDefined();
+  });
+
+  // O operador não vê a conversa do WTS na nossa tela. Ver o motivo é o que
+  // transforma o clique seguinte em decisão, em vez de aposta.
+  it("oferece pode_forcar quando o bloqueio foi uma conversa que o sistema viu", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
+    mockarFetchWts({ status: "DELIVERED" }, [sessao("2026-09-10T11:00:00-03:00")]);
+    mockarSupabase();
+
+    const corpo = await (await enviar({ leadId: 7 })).json();
+
+    expect(corpo.pode_forcar).toBe(true);
+  });
+
+  it("forcar envia de verdade, uma vez so", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
+    mockarFetchWts({ status: "DELIVERED" }, [sessao("2026-09-10T11:00:00-03:00")]);
+    const { chamadasInsertAtivacao } = mockarSupabase();
+
+    const corpo = await (await enviar({ leadId: 7, forcar: true })).json();
+
+    expect(corpo.enviado).toBe(true);
+    expect(chamadasDeEnvio()).toHaveLength(1);
+    expect(chamadasInsertAtivacao[0].modo).toBe("manual_conversa_aberta");
+  });
+
+  // Forçar levanta UMA guarda. O kill-switch continua sendo o freio de mão.
+  it("forcar nao contorna o kill-switch", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
+    mockarSupabase({ cfg: { ...CFG_BASE, kill_switch: true } });
+
+    const corpo = await (await enviar({ leadId: 7, forcar: true })).json();
+
+    expect(corpo.enviado).toBe(false);
+    expect(corpo.motivo).toBe("kill-switch ligado");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("forcar so vale em booleano true: string nao liga a excecao", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
+    mockarFetchWts({ status: "DELIVERED" }, [sessao("2026-09-10T11:00:00-03:00")]);
+    mockarSupabase();
+
+    const corpo = await (await enviar({ leadId: 7, forcar: "true" })).json();
+
+    expect(corpo.enviado).toBe(false);
+    expect(chamadasDeEnvio()).toHaveLength(0);
+  });
+
+  // Fail-closed: sem conseguir ler o WTS, a mensagem não sai, e a tela não
+  // oferece atalho para mandar às cegas.
+  it("falha na consulta ao WTS bloqueia o envio e NAO oferece pode_forcar", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
+    fetchMock.mockImplementation(async (url: unknown) => {
+      if (String(url).includes("/core/v1/contact/phonenumber/")) {
+        return { ok: true, text: async () => JSON.stringify({ id: CONTATO_WTS }) };
+      }
+      return { ok: false, status: 503, text: async () => "indisponivel" };
+    });
+    mockarSupabase();
+
+    const corpo = await (await enviar({ leadId: 7 })).json();
+
+    expect(corpo.enviado).toBe(false);
+    expect(corpo.acao).toBe("suprimido");
+    expect(String(corpo.motivo)).toContain("nao foi possivel conferir conversa no WTS");
+    expect(corpo.pode_forcar).toBe(false);
+    expect(chamadasDeEnvio()).toHaveLength(0);
+  });
+
+  it("conversa antiga nao bloqueia: o lead que volta meses depois e contatado", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
+    mockarFetchWts({ status: "DELIVERED" }, [sessao("2026-04-10T11:00:00-03:00")]);
+    mockarSupabase();
+
+    const corpo = await (await enviar({ leadId: 7 })).json();
+
+    expect(corpo.enviado).toBe(true);
+    expect(chamadasDeEnvio()).toHaveLength(1);
   });
 });
 

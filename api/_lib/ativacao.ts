@@ -1,4 +1,5 @@
 import type { ModoEnvio } from "../../src/tipos.js";
+import { conferirConversaNoWts, JANELA_CONVERSA_PADRAO_DIAS } from "./conversa.js";
 import { getSupabase } from "./supabase.js";
 import { decidirSupressao } from "./supressao.js";
 import { montarEnvio, montarTexto, wtsRequest } from "./wts.js";
@@ -23,6 +24,20 @@ export interface OpcoesAtivacao {
    * que existe um humano esperando a resposta na tela.
    */
   autorizadoManualmente?: boolean;
+
+  /**
+   * Levanta UMA guarda, a de conversa já aberta no WTS, e nenhuma outra.
+   *
+   * Só tem efeito junto de `autorizadoManualmente`, e só depois de a tela ter
+   * mostrado ao operador o motivo com a idade da última mensagem ("ja existe
+   * conversa no WTS, ultima mensagem ha 2h"). É deliberado que o caminho
+   * automático não possa passar isso: quem decide por cima da informação é a
+   * pessoa que acabou de lê-la.
+   *
+   * Não vale quando a consulta ao WTS FALHOU: nesse caso não existe
+   * informação para decidir por cima, só ignorância (ver ResultadoConversa).
+   */
+  ignorarConversaAberta?: boolean;
 }
 
 export interface ResultadoAtivacao {
@@ -37,6 +52,12 @@ export interface ResultadoAtivacao {
    */
   verificado: boolean;
   verificacaoDetalhe: string | null;
+  /**
+   * true só quando o ÚNICO bloqueio foi uma conversa aberta que o sistema
+   * conseguiu ver de fato. É o que autoriza a tela a oferecer "enviar mesmo
+   * assim" ao operador, com o motivo na frente dele.
+   */
+  podeForcar: boolean;
 }
 
 /** O que a tela mostra ao operador ANTES de ele confirmar o envio. */
@@ -122,6 +143,13 @@ interface ConfigBanco {
   texto_boas_vindas: string;
   wts_from: string | null;
   janela_supressao_dias: number;
+  /**
+   * Opcional de propósito: a coluna pode ainda não existir em
+   * `portais_config` (o select é `*`, e o que não existe volta undefined).
+   * Enquanto não existir, vale JANELA_CONVERSA_PADRAO_DIAS — a guarda nunca
+   * fica desligada só porque a migration não rodou.
+   */
+  janela_conversa_dias?: number | null;
   horario_inicio: string;
   horario_fim: string;
   modo_envio: ModoEnvio;
@@ -272,7 +300,7 @@ export async function ativarLeadDetalhado(
   const janela = { horarioInicio: cfg.horario_inicio, horarioFim: cfg.horario_fim };
   const agora = new Date();
 
-  const acao = decidirAcao({
+  let acao = decidirAcao({
     modo: cfg.modo_envio,
     suprimir,
     motivo,
@@ -281,16 +309,58 @@ export async function ativarLeadDetalhado(
     ...janela,
   });
 
+  // Motivo exibido ao operador e gravado na auditoria. Começa no motivo da
+  // cadeia local de guardas e pode ser substituído pelo da conversa aberta.
+  let motivoFinal = acao === "suprimido" ? motivo : acao === "adiar" ? "fora da janela" : null;
+  let conversaIgnorada = false;
+  let podeForcar = false;
+
+  // A GUARDA QUE FALTAVA. `portais_leads.enviado_em` só conhece os contatos
+  // que ESTE app fez: ele não faz ideia de que o telefone já está negociando
+  // com a equipe humana no WTS. Foi assim que um "vi que gostou de um lindo
+  // veículo" caiu no meio de uma negociação real e alguém apagou a mensagem
+  // nove segundos depois.
+  //
+  // Roda só quando uma mensagem está mesmo prestes a sair: em dry_run, fora
+  // da janela ou já suprimido por outra guarda, nada sai, e a rede continua
+  // intocada (promessa que o resto do arquivo faz e que não pode cair aqui).
+  const e164 = lead.telefone_e164;
+  if (acao === "enviar" && e164) {
+    const conversa = await conferirConversaNoWts({
+      e164,
+      janelaDias: janelaConversaDias(cfg),
+      agora,
+    });
+
+    if (conversa.suprimir) {
+      // Só é possível passar por cima do que o sistema CONSEGUIU VER. Falha
+      // de consulta não é informação, é ausência dela, e o operador não tem
+      // como decidir sobre o que ninguém leu.
+      const forcado = manual && opcoes.ignorarConversaAberta === true && !conversa.falhou;
+      if (forcado) {
+        conversaIgnorada = true;
+      } else {
+        motivoFinal = conversa.motivo;
+        podeForcar = manual && !conversa.falhou;
+        // Fail-closed nos dois casos, com preços diferentes: conversa aberta
+        // é uma DECISÃO (o lead fica suprimido, com o motivo na tela), e
+        // falha de consulta no caminho automático é uma INDISPONIBILIDADE
+        // temporária, que vira "adiar" — o lead permanece 'pendente' e a
+        // próxima passada do cron tenta de novo, em vez de sumir da fila por
+        // causa de um 503 do WTS.
+        acao = conversa.falhou && !manual ? "adiar" : "suprimido";
+      }
+    }
+  }
+
   // `modo` na auditoria descreve COMO a ativação foi decidida, e não o que
   // estava na config: uma linha com modo 'dry_run' e resposta_wts preenchida
   // seria uma contradição para quem for ler isso depois. Envio autorizado no
-  // botão é gravado como manual, e o valor carrega, no próprio nome, a
-  // informação de que a janela de horário foi dispensada.
+  // botão é gravado como manual, e o valor carrega, no próprio nome, cada
+  // guarda que o humano dispensou (janela de horário, conversa aberta).
   const modoRegistrado = !manual
     ? cfg.modo_envio
-    : dentroDaJanela(agora, janela)
-      ? "manual"
-      : "manual_fora_janela";
+    : `manual${conversaIgnorada ? "_conversa_aberta" : ""}${dentroDaJanela(agora, janela) ? "" : "_fora_janela"}`;
 
   // A linha de auditoria é gravada SEMPRE, inclusive quando nada sai. É ela
   // que responde depois "por que esse lead não recebeu mensagem".
@@ -300,7 +370,7 @@ export async function ativarLeadDetalhado(
       lead_id: leadId,
       modo: modoRegistrado,
       payload_enviado: payload,
-      erro: acao === "suprimido" ? motivo : acao === "adiar" ? "fora da janela" : null,
+      erro: acao === "suprimido" || acao === "adiar" ? motivoFinal : null,
     })
     .select("id");
 
@@ -311,10 +381,15 @@ export async function ativarLeadDetalhado(
   const semEnvio = (decidida: Acao): ResultadoAtivacao => ({
     acao: decidida,
     motivo:
-      decidida === "suprimido" ? motivo : decidida === "adiar" ? "fora da janela de horario" : null,
+      decidida === "suprimido"
+        ? motivoFinal
+        : decidida === "adiar"
+          ? (motivoFinal === "fora da janela" ? "fora da janela de horario" : motivoFinal)
+          : null,
     respostaWts: null,
     verificado: false,
     verificacaoDetalhe: null,
+    podeForcar,
   });
 
   if (acao === "adiar") {
@@ -329,7 +404,7 @@ export async function ativarLeadDetalhado(
   if (acao !== "enviar") {
     await atualizarLead(sb, leadId, {
       status_ativacao: acao === "suprimido" ? "suprimido" : "dry_run",
-      motivo_supressao: acao === "suprimido" ? motivo : null,
+      motivo_supressao: acao === "suprimido" ? motivoFinal : null,
     });
     return semEnvio(acao);
   }
@@ -385,7 +460,20 @@ export async function ativarLeadDetalhado(
     respostaWts: resposta,
     verificado: verificacao.verificado,
     verificacaoDetalhe: verificacao.detalhe,
+    podeForcar: false,
   };
+}
+
+/**
+ * Quantos dias de silêncio uma conversa precisa ter para deixar de contar
+ * como negociação em andamento. Config quando existe, default quando não:
+ * valor ausente, nulo, zero, negativo ou não numérico cai no padrão em vez
+ * de desligar a guarda — uma linha de config errada não pode abrir a porta
+ * que este arquivo inteiro existe para fechar.
+ */
+function janelaConversaDias(cfg: ConfigBanco): number {
+  const v = cfg.janela_conversa_dias;
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : JANELA_CONVERSA_PADRAO_DIAS;
 }
 
 /**

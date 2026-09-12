@@ -65,11 +65,22 @@ export async function POST(request: Request): Promise<Response> {
   const leadId = lerLeadId((corpo as Record<string, unknown>).leadId);
   if (leadId === null) return erro("leadId invalido", 400);
 
+  // O segundo clique, e só ele: a tela só oferece "enviar mesmo assim" depois
+  // de um POST ter voltado com pode_forcar e o motivo com a idade da última
+  // mensagem na frente do operador. Booleano estrito de propósito — a string
+  // "true" de um payload malformado não pode levantar uma guarda de envio.
+  const forcar = (corpo as Record<string, unknown>).forcar === true;
+
   let resultado;
   try {
     // A autorização humana vale para ESTE lead e só nesta chamada. Todas as
-    // guardas de ativacao.ts continuam valendo, em especial a supressão.
-    resultado = await ativarLeadDetalhado(leadId, { autorizadoManualmente: true });
+    // guardas de ativacao.ts continuam valendo, em especial a supressão. A
+    // única que o operador informado pode levantar é a de conversa aberta, e
+    // mesmo essa não vale quando a consulta ao WTS falhou.
+    resultado = await ativarLeadDetalhado(leadId, {
+      autorizadoManualmente: true,
+      ignorarConversaAberta: forcar,
+    });
   } catch (e) {
     // Erro vindo do WTS é problema de gateway, não do painel: 502 separa
     // "a mensagem não saiu porque o WTS recusou" de "o painel quebrou".
@@ -88,6 +99,10 @@ export async function POST(request: Request): Promise<Response> {
     resposta_wts: resultado.respostaWts,
     verificado: resultado.verificado,
     verificacao_detalhe: resultado.verificacaoDetalhe,
+    // Só vem true quando o bloqueio foi uma conversa que o sistema conseguiu
+    // LER. Falha de consulta bloqueia igual e não oferece atalho nenhum: o
+    // operador não tem como decidir sobre o que ninguém leu.
+    pode_forcar: resultado.podeForcar,
   });
 }
 

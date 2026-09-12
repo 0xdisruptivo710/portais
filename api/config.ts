@@ -15,6 +15,11 @@ const CAMPOS = [
   "wts_coluna_id",
   "wts_from",
   "janela_supressao_dias",
+  // Dias de silêncio a partir dos quais uma conversa no WTS deixa de contar
+  // como negociação em andamento. Ausente na config, vale o padrão do código
+  // (ver JANELA_CONVERSA_PADRAO_DIAS): a guarda nunca fica desligada por
+  // falta de linha no banco.
+  "janela_conversa_dias",
   "horario_inicio",
   "horario_fim",
   "modo_envio",

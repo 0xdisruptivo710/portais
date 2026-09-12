@@ -18,6 +18,13 @@ interface ResultadoEnvio {
   motivo: string | null;
   verificado: boolean;
   verificacao_detalhe: string | null;
+  /**
+   * O servidor só manda true quando o único bloqueio foi uma conversa aberta
+   * no WTS que ele CONSEGUIU LER. É o que autoriza a saída abaixo. Quando a
+   * consulta ao WTS falhou, o envio é bloqueado igual e isto vem false: não
+   * existe atalho para mandar sem saber se há negociação em andamento.
+   */
+  pode_forcar?: boolean;
 }
 
 interface Props {
@@ -61,7 +68,13 @@ export default function BotaoEnviar({ leadId, aoEnviar }: Props) {
     }
   }
 
-  async function confirmar() {
+  /**
+   * `forcar` levanta UMA guarda do servidor, a de conversa já aberta no WTS,
+   * e só é passado no segundo clique: o primeiro POST é sempre sem ele, e é
+   * ele que traz o motivo com a idade da última mensagem para a tela. Nenhum
+   * caminho desta tela manda `forcar` antes de o operador ter lido isso.
+   */
+  async function confirmar(forcar = false) {
     if (enviando) return;
     setEnviando(true);
     setErro(null);
@@ -69,7 +82,7 @@ export default function BotaoEnviar({ leadId, aoEnviar }: Props) {
       const resposta = await chamarApi("/api/enviar", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ leadId }),
+        body: JSON.stringify(forcar ? { leadId, forcar: true } : { leadId }),
       });
       const corpo = await resposta.json().catch(() => null);
       if (!resposta.ok) throw new Error(mensagemDeErro(corpo, "falha ao enviar a mensagem"));
@@ -105,10 +118,41 @@ export default function BotaoEnviar({ leadId, aoEnviar }: Props) {
             </p>
           </>
         ) : (
-          <p role="alert" className="faixa-atencao">
-            <Ban aria-hidden="true" className="mt-px h-4 w-4 shrink-0" />
-            Não enviado. Motivo: {resultado.motivo ?? "sem motivo registrado"}
-          </p>
+          <>
+            <p role="alert" className="faixa-atencao">
+              <Ban aria-hidden="true" className="mt-px h-4 w-4 shrink-0" />
+              Não enviado. Motivo: {resultado.motivo ?? "sem motivo registrado"}
+            </p>
+            {/* Saída só existe quando o servidor conseguiu LER a conversa e
+                mandou o motivo com a idade da última mensagem acima. O
+                operador não enxerga o WTS nesta tela, então é essa linha que
+                transforma o clique seguinte em decisão. Nenhuma outra
+                supressão (kill-switch, telefone, janela de recontato) oferece
+                isto, nem uma falha de consulta ao WTS. */}
+            {resultado.pode_forcar && (
+              <>
+                <p className="text-[12px] text-aios-texto-suave">
+                  Confira a conversa no WTS antes. Enviar mesmo assim faz o primeiro contato cair no
+                  meio dela.
+                </p>
+                <button
+                  type="button"
+                  className="botao self-start"
+                  onClick={() => confirmar(true)}
+                  disabled={enviando}
+                >
+                  {enviando && <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />}
+                  {enviando ? "Enviando..." : "Enviar mesmo assim"}
+                </button>
+                {erro && (
+                  <p role="alert" className="faixa-erro">
+                    <AlertCircle aria-hidden="true" className="mt-px h-4 w-4 shrink-0" />
+                    {erro}
+                  </p>
+                )}
+              </>
+            )}
+          </>
         )}
       </div>
     );
@@ -175,7 +219,7 @@ export default function BotaoEnviar({ leadId, aoEnviar }: Props) {
       )}
 
       <div className="flex flex-wrap gap-2">
-        <button type="button" className="botao botao-primario" onClick={confirmar} disabled={enviando}>
+        <button type="button" className="botao botao-primario" onClick={() => confirmar()} disabled={enviando}>
           {enviando && <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />}
           {enviando ? "Enviando..." : "Confirmar envio"}
         </button>

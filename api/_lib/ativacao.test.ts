@@ -347,7 +347,10 @@ describe("ativarLead", () => {
     const acao = await ativarLead(1);
 
     expect(acao).toBe("enviar");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Por rota, não sobre o fetchMock inteiro: a conferência de conversa
+    // aberta que roda antes do envio também é uma chamada, e o que este teste
+    // afirma é "um envio", não "uma requisição".
+    expect(chamadasDeEnvio()).toHaveLength(1);
     const chamada = chamadasUpdateLead.find((c) => c.status_ativacao === "enviado");
     expect(chamada).toBeDefined();
   });
@@ -428,7 +431,7 @@ describe("ativarLead", () => {
     });
 
     await expect(ativarLead(1)).rejects.toThrow();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(chamadasDeEnvio()).toHaveLength(1);
   });
 
   // O estado do lead (status_ativacao/enviado_em) é o que sustenta a
@@ -449,7 +452,7 @@ describe("ativarLead", () => {
     const acao = await ativarLead(1);
 
     expect(acao).toBe("enviar");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(chamadasDeEnvio()).toHaveLength(1);
     const chamada = chamadasUpdateLead.find((c) => c.status_ativacao === "enviado");
     expect(chamada).toBeDefined();
     expect(warnSpy).toHaveBeenCalledTimes(1);
@@ -517,14 +520,24 @@ describe("ativarLead", () => {
   });
 });
 
+const CONTATO_WTS = "contato-1";
+
 /**
- * Roteia o mock de fetch por URL: o envio e a conferência de status são duas
- * chamadas diferentes na mesma função, e contá-las juntas esconderia
- * justamente o que importa aqui (um envio, nunca dois).
+ * Roteia o mock de fetch por URL: a conferência de conversa aberta, o envio e
+ * a conferência de status são chamadas diferentes na mesma função, e
+ * contá-las juntas esconderia justamente o que importa aqui (um envio, nunca
+ * dois). Por isso todas as contagens abaixo são por rota, nunca sobre o
+ * fetchMock inteiro.
  */
-function mockarFetchWts(statusDaMensagem: unknown = { status: "DELIVERED" }) {
+function mockarFetchWts(statusDaMensagem: unknown = { status: "DELIVERED" }, sessoes: unknown[] = []) {
   fetchMock.mockImplementation(async (url: unknown) => {
     const alvo = String(url);
+    if (alvo.includes("/core/v1/contact/phonenumber/")) {
+      return { ok: true, text: async () => JSON.stringify({ id: CONTATO_WTS }) };
+    }
+    if (alvo.includes("/chat/v2/session")) {
+      return { ok: true, text: async () => JSON.stringify({ items: sessoes }) };
+    }
     if (alvo.endsWith("/chat/v1/message/send")) {
       return { ok: true, text: async () => JSON.stringify({ id: "msg-1", status: "QUEUED" }) };
     }
@@ -541,6 +554,15 @@ function chamadasDeEnvio(): unknown[] {
 
 function chamadasDeStatus(): unknown[] {
   return fetchMock.mock.calls.filter((c) => String(c[0]).endsWith("/status"));
+}
+
+function chamadasDeSessao(): unknown[] {
+  return fetchMock.mock.calls.filter((c) => String(c[0]).includes("/chat/v2/session"));
+}
+
+/** Uma sessão do contato com mensagem no instante pedido. */
+function sessao(quando: string) {
+  return { contactId: CONTATO_WTS, lastMessageIn: quando, status: "OPEN" };
 }
 
 const MANUAL = { autorizadoManualmente: true };
@@ -686,6 +708,14 @@ describe("ativarLeadDetalhado com autorizacao manual (botao do painel)", () => {
     vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
     fetchMock.mockImplementation(async (url: unknown) => {
       const alvo = String(url);
+      // A conferência de conversa aberta responde normal: o que falha aqui é
+      // só a consulta de status, que é o que este teste mede.
+      if (alvo.includes("/core/v1/contact/phonenumber/")) {
+        return { ok: true, text: async () => JSON.stringify({ id: CONTATO_WTS }) };
+      }
+      if (alvo.includes("/chat/v2/session")) {
+        return { ok: true, text: async () => JSON.stringify({ items: [] }) };
+      }
       if (alvo.endsWith("/chat/v1/message/send")) {
         return { ok: true, text: async () => JSON.stringify({ id: "msg-1" }) };
       }
@@ -704,7 +734,17 @@ describe("ativarLeadDetalhado com autorizacao manual (botao do painel)", () => {
   it("resposta de envio sem id: registra honestamente que nao deu para conferir", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
-    fetchMock.mockResolvedValue({ ok: true, text: async () => JSON.stringify({ status: "QUEUED" }) });
+    fetchMock.mockImplementation(async (url: unknown) => {
+      const alvo = String(url);
+      if (alvo.includes("/core/v1/contact/phonenumber/")) {
+        return { ok: true, text: async () => JSON.stringify({ id: CONTATO_WTS }) };
+      }
+      if (alvo.includes("/chat/v2/session")) {
+        return { ok: true, text: async () => JSON.stringify({ items: [] }) };
+      }
+      // O que este teste mede: a resposta do ENVIO sem id de mensagem.
+      return { ok: true, text: async () => JSON.stringify({ status: "QUEUED" }) };
+    });
     mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "dry_run" } });
 
     const resultado = await ativarLeadDetalhado(1, MANUAL);
@@ -725,10 +765,209 @@ describe("ativarLeadDetalhado com autorizacao manual (botao do painel)", () => {
 
     await ativarLead(1);
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(chamadasDeEnvio()).toHaveLength(1);
     expect(chamadasDeStatus()).toHaveLength(0);
     expect(chamadasUpdateAtivacao[0].verificado).toBe(false);
     expect(String(chamadasUpdateAtivacao[0].verificacao_detalhe)).toContain("automatico");
+  });
+});
+
+/**
+ * A guarda que faltava. O telefone do lead pode já estar no meio de uma
+ * negociação com a equipe humana, e `portais_leads.enviado_em` não sabe disso:
+ * ele só conhece os contatos que ESTE app fez. Aconteceu em produção, com
+ * cliente real, e a mensagem foi apagada nove segundos depois.
+ */
+describe("supressao por conversa aberta no WTS", () => {
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.mocked(getSupabase).mockReset();
+    process.env.WTS_TOKEN = "token-de-teste";
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-10T13:00:00-03:00"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    delete process.env.WTS_TOKEN;
+  });
+
+  it("telefone com conversa recente: suprimido, e a rede de ENVIO nao e chamada", async () => {
+    mockarFetchWts({ status: "DELIVERED" }, [sessao("2026-09-10T11:00:00-03:00")]);
+    const { chamadasUpdateLead, chamadasInsertAtivacao } = mockarSupabase({
+      cfg: { ...CFG_BASE, modo_envio: "real" },
+    });
+
+    const resultado = await ativarLeadDetalhado(1);
+
+    expect(resultado.acao).toBe("suprimido");
+    expect(chamadasDeEnvio()).toHaveLength(0);
+    expect(resultado.motivo).toBe("ja existe conversa no WTS, ultima mensagem ha 2h");
+    expect(chamadasInsertAtivacao[0].erro).toBe("ja existe conversa no WTS, ultima mensagem ha 2h");
+    const gravacao = chamadasUpdateLead.find((c) => c.status_ativacao === "suprimido");
+    expect(gravacao?.motivo_supressao).toBe("ja existe conversa no WTS, ultima mensagem ha 2h");
+  });
+
+  it("telefone sem conversa nenhuma: envia normalmente", async () => {
+    mockarFetchWts({ status: "DELIVERED" }, []);
+    const { chamadasUpdateLead } = mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "real" } });
+
+    const resultado = await ativarLeadDetalhado(1);
+
+    expect(resultado.acao).toBe("enviar");
+    expect(chamadasDeEnvio()).toHaveLength(1);
+    expect(chamadasUpdateLead.find((c) => c.status_ativacao === "enviado")).toBeDefined();
+  });
+
+  // Lead que volta meses depois por outro portal continua sendo lead.
+  it("conversa antiga, fora do criterio de recencia: envia", async () => {
+    mockarFetchWts({ status: "DELIVERED" }, [sessao("2026-05-10T11:00:00-03:00")]);
+    mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "real" } });
+
+    const resultado = await ativarLeadDetalhado(1);
+
+    expect(resultado.acao).toBe("enviar");
+    expect(chamadasDeEnvio()).toHaveLength(1);
+  });
+
+  it("usa janela_conversa_dias da config quando ela existe", async () => {
+    // 2 dias atrás: dentro de uma janela de 30, fora da janela padrão de 7.
+    mockarFetchWts({ status: "DELIVERED" }, [sessao("2026-09-08T11:00:00-03:00")]);
+    mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "real", janela_conversa_dias: 1 } });
+
+    const resultado = await ativarLeadDetalhado(1);
+
+    expect(resultado.acao).toBe("enviar");
+  });
+
+  // Fail-closed, e no caminho automático o preço é "adiar", não "suprimir":
+  // o lead PERMANECE pendente e a próxima passada do cron tenta de novo. Uma
+  // instabilidade do WTS não pode apagar um lead legítimo da fila em silêncio.
+  it("falha na consulta, caminho automatico: adia, lead continua pendente, nada e enviado", async () => {
+    fetchMock.mockImplementation(async (url: unknown) => {
+      if (String(url).includes("/core/v1/contact/phonenumber/")) {
+        return { ok: true, text: async () => JSON.stringify({ id: CONTATO_WTS }) };
+      }
+      return { ok: false, status: 503, text: async () => "indisponivel" };
+    });
+    const { chamadasUpdateLead, chamadasInsertAtivacao } = mockarSupabase({
+      cfg: { ...CFG_BASE, modo_envio: "real" },
+    });
+
+    const resultado = await ativarLeadDetalhado(1);
+
+    expect(resultado.acao).toBe("adiar");
+    expect(chamadasDeEnvio()).toHaveLength(0);
+    // Nenhuma escrita em portais_leads: é isso que devolve o lead à fila.
+    expect(chamadasUpdateLead).toHaveLength(0);
+    expect(String(chamadasInsertAtivacao[0].erro)).toContain("nao foi possivel conferir conversa no WTS");
+  });
+
+  it("falha na consulta, caminho manual: suprimido com o motivo, e nao da para forcar", async () => {
+    fetchMock.mockImplementation(async (url: unknown) => {
+      if (String(url).includes("/core/v1/contact/phonenumber/")) {
+        return { ok: true, text: async () => JSON.stringify({ id: CONTATO_WTS }) };
+      }
+      return { ok: false, status: 503, text: async () => "indisponivel" };
+    });
+    mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "dry_run" } });
+
+    const resultado = await ativarLeadDetalhado(1, MANUAL);
+
+    expect(resultado.acao).toBe("suprimido");
+    expect(chamadasDeEnvio()).toHaveLength(0);
+    expect(String(resultado.motivo)).toContain("nao foi possivel conferir");
+    // Dá para decidir por cima de uma informação, nunca por cima de uma
+    // ignorância: sem saber se existe negociação, o botão não oferece saída.
+    expect(resultado.podeForcar).toBe(false);
+  });
+
+  it("conversa recente no caminho manual: suprimido, e a tela recebe podeForcar", async () => {
+    mockarFetchWts({ status: "DELIVERED" }, [sessao("2026-09-10T11:00:00-03:00")]);
+    mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "dry_run" } });
+
+    const resultado = await ativarLeadDetalhado(1, MANUAL);
+
+    expect(resultado.acao).toBe("suprimido");
+    expect(resultado.podeForcar).toBe(true);
+    expect(chamadasDeEnvio()).toHaveLength(0);
+  });
+
+  it("forcar com conversa recente envia, e a auditoria diz manual_conversa_aberta", async () => {
+    mockarFetchWts({ status: "DELIVERED" }, [sessao("2026-09-10T11:00:00-03:00")]);
+    const { chamadasInsertAtivacao } = mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "dry_run" } });
+
+    const resultado = await ativarLeadDetalhado(1, { ...MANUAL, ignorarConversaAberta: true });
+
+    expect(resultado.acao).toBe("enviar");
+    expect(chamadasDeEnvio()).toHaveLength(1);
+    expect(chamadasInsertAtivacao[0].modo).toBe("manual_conversa_aberta");
+  });
+
+  it("forcar fora da janela de horario registra as duas coisas no modo", async () => {
+    vi.setSystemTime(new Date("2026-09-10T21:30:00-03:00"));
+    mockarFetchWts({ status: "DELIVERED" }, [sessao("2026-09-10T20:00:00-03:00")]);
+    const { chamadasInsertAtivacao } = mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "dry_run" } });
+
+    await ativarLeadDetalhado(1, { ...MANUAL, ignorarConversaAberta: true });
+
+    expect(chamadasInsertAtivacao[0].modo).toBe("manual_conversa_aberta_fora_janela");
+  });
+
+  // Forçar levanta UMA guarda, a de conversa aberta. Nenhuma outra.
+  it("forcar nao contorna o kill-switch", async () => {
+    mockarFetchWts({ status: "DELIVERED" }, [sessao("2026-09-10T11:00:00-03:00")]);
+    mockarSupabase({ cfg: { ...CFG_BASE, kill_switch: true } });
+
+    const resultado = await ativarLeadDetalhado(1, { ...MANUAL, ignorarConversaAberta: true });
+
+    expect(resultado.acao).toBe("suprimido");
+    expect(resultado.motivo).toBe("kill-switch ligado");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("forcar no caminho automatico nao existe: a opcao so vale com autorizacao manual", async () => {
+    mockarFetchWts({ status: "DELIVERED" }, [sessao("2026-09-10T11:00:00-03:00")]);
+    mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "real" } });
+
+    const resultado = await ativarLeadDetalhado(1, { ignorarConversaAberta: true });
+
+    expect(resultado.acao).toBe("suprimido");
+    expect(chamadasDeEnvio()).toHaveLength(0);
+  });
+
+  // A consulta só acontece quando uma mensagem está mesmo prestes a sair. Em
+  // dry_run nada sai, e a promessa de que dry_run não toca a rede continua de pé.
+  it("dry_run nao consulta conversa nenhuma", async () => {
+    mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "dry_run" } });
+
+    const acao = await ativarLead(1);
+
+    expect(acao).toBe("dry_run");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fora da janela de horario nao consulta conversa: o lead nem chegou a enviar", async () => {
+    vi.setSystemTime(new Date("2026-09-10T03:00:00-03:00"));
+    mockarSupabase({ cfg: { ...CFG_BASE, modo_envio: "real" } });
+
+    const acao = await ativarLead(1);
+
+    expect(acao).toBe("adiar");
+    expect(chamadasDeSessao()).toHaveLength(0);
+  });
+
+  it("ja suprimido por outra guarda nao gasta consulta ao WTS", async () => {
+    mockarSupabase({
+      cfg: { ...CFG_BASE, modo_envio: "real" },
+      anteriores: [{ enviado_em: "2026-09-07T13:00:00-03:00" }],
+    });
+
+    const resultado = await ativarLeadDetalhado(1, MANUAL);
+
+    expect(resultado.acao).toBe("suprimido");
+    expect(resultado.motivo).toBe("contatado ha 3d, janela de 30d");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

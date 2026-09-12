@@ -190,3 +190,106 @@ describe("botao de envio de um lead", () => {
     expect(screen.queryByRole("button", { name: /confirmar envio/i })).not.toBeInTheDocument();
   });
 });
+
+/**
+ * O operador não vê a conversa do WTS nesta tela. Quando o servidor bloqueia
+ * por conversa aberta, é o motivo dele que transforma o clique seguinte numa
+ * decisão informada, em vez de uma aposta no escuro.
+ */
+const BLOQUEADO_POR_CONVERSA = {
+  acao: "suprimido",
+  enviado: false,
+  motivo: "ja existe conversa no WTS, ultima mensagem ha 2h",
+  resposta_wts: null,
+  verificado: false,
+  verificacao_detalhe: null,
+  pode_forcar: true,
+};
+
+function corpoDoPost(f: ReturnType<typeof vi.fn>, indice: number): Record<string, unknown> {
+  const chamada = f.mock.calls.filter((c) => (c[1] as RequestInit | undefined)?.method === "POST")[indice];
+  return JSON.parse(String((chamada[1] as RequestInit).body));
+}
+
+describe("botao de envio: conversa ja aberta no WTS", () => {
+  it("mostra o motivo com a idade da ultima mensagem", async () => {
+    mockarApi(PREVIA, BLOQUEADO_POR_CONVERSA);
+    render(<BotaoEnviar leadId={7} aoEnviar={() => {}} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^enviar$/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /confirmar envio/i }));
+
+    expect(await screen.findByText(/ja existe conversa no WTS, ultima mensagem ha 2h/)).toBeInTheDocument();
+  });
+
+  it("o primeiro clique NAO manda mensagem: ele so traz o motivo", async () => {
+    const f = mockarApi(PREVIA, BLOQUEADO_POR_CONVERSA);
+    const aoEnviar = vi.fn();
+    render(<BotaoEnviar leadId={7} aoEnviar={aoEnviar} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^enviar$/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /confirmar envio/i }));
+
+    expect(chamadasPost(f)).toHaveLength(1);
+    expect(corpoDoPost(f, 0).forcar).toBeUndefined();
+    expect(aoEnviar).toHaveBeenCalledWith("suprimido");
+  });
+
+  it("oferece enviar mesmo assim, e o segundo clique manda forcar", async () => {
+    const f = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method !== "POST") return { ok: true, status: 200, json: async () => PREVIA };
+      const corpo = JSON.parse(String(init.body)) as { forcar?: boolean };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => (corpo.forcar ? ENVIADO : BLOQUEADO_POR_CONVERSA),
+      };
+    });
+    vi.stubGlobal("fetch", f);
+    render(<BotaoEnviar leadId={7} aoEnviar={() => {}} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^enviar$/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /confirmar envio/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /enviar mesmo assim/i }));
+
+    expect(await screen.findByText(/mensagem enviada/i)).toBeInTheDocument();
+    expect(chamadasPost(f)).toHaveLength(2);
+    expect(corpoDoPost(f, 1).forcar).toBe(true);
+  });
+
+  // Falha de consulta ao WTS bloqueia igual, mas não vem com pode_forcar: não
+  // existe atalho para mandar sem saber se há negociação em andamento.
+  it("nao oferece saida quando o servidor nao conseguiu conferir", async () => {
+    mockarApi(PREVIA, {
+      ...BLOQUEADO_POR_CONVERSA,
+      motivo: "nao foi possivel conferir conversa no WTS: WTS GET 503",
+      pode_forcar: false,
+    });
+    render(<BotaoEnviar leadId={7} aoEnviar={() => {}} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^enviar$/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /confirmar envio/i }));
+
+    expect(await screen.findByText(/nao foi possivel conferir conversa no WTS/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /enviar mesmo assim/i })).not.toBeInTheDocument();
+  });
+
+  it("supressao comum (kill-switch) continua sem oferecer saida", async () => {
+    mockarApi(PREVIA, {
+      acao: "suprimido",
+      enviado: false,
+      motivo: "kill-switch ligado",
+      resposta_wts: null,
+      verificado: false,
+      verificacao_detalhe: null,
+      pode_forcar: false,
+    });
+    render(<BotaoEnviar leadId={7} aoEnviar={() => {}} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^enviar$/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /confirmar envio/i }));
+
+    expect(await screen.findByText(/kill-switch ligado/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /enviar mesmo assim/i })).not.toBeInTheDocument();
+  });
+});
