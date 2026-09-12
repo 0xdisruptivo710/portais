@@ -11,10 +11,16 @@ describe("tela de leads", () => {
   });
 
   it("lista o lead com portal e veículo", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+    // Roteia por URL: a tela tambem pede /api/vendedores, e devolver a lista
+    // de leads ali encheria o seletor com nome de lead.
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
       ok: true,
-      json: async () => ({ itens: [{ id: 1, portal: "webmotors", nome: "Fulano", veiculo_texto: "Civic 2020", telefone_exibicao: "+55 (15) 99128-0217", status_ativacao: "dry_run" }] }),
-    }));
+      status: 200,
+      json: async () =>
+        url.startsWith("/api/leads")
+          ? { itens: [{ id: 1, portal: "webmotors", nome: "Fulano", veiculo_texto: "Civic 2020", telefone_exibicao: "+55 (15) 99128-0217", status_ativacao: "dry_run" }] }
+          : { itens: [] },
+    })));
     render(<Leads />);
     expect(await screen.findByText("Fulano")).toBeInTheDocument();
     expect(screen.getByText(/civic 2020/i)).toBeInTheDocument();
@@ -57,6 +63,12 @@ describe("tela de leads", () => {
   });
 });
 
+const VENDEDORES = [
+  { id: 1, nome: "Murilo", ordem: 1 },
+  { id: 2, nome: "Beatryz", ordem: 2 },
+  { id: 3, nome: "Vinicius", ordem: 3 },
+];
+
 const LEAD_COM_TELEFONE = {
   id: 1,
   portal: "webmotors",
@@ -86,6 +98,12 @@ function mockarApiDeLeads(itens: unknown[], envio: unknown) {
   const f = vi.fn(async (url: string, init?: RequestInit) => {
     if (url.startsWith("/api/leads")) {
       return { ok: true, status: 200, json: async () => ({ itens }) };
+    }
+    if (url.startsWith("/api/vendedores")) {
+      return { ok: true, status: 200, json: async () => ({ itens: VENDEDORES }) };
+    }
+    if (url.startsWith("/api/revisao")) {
+      return { ok: true, status: 200, json: async () => ({ itens: [] }) };
     }
     if (init?.method === "POST") return { ok: true, status: 200, json: async () => envio };
     return { ok: true, status: 200, json: async () => PREVIA };
@@ -137,5 +155,92 @@ describe("tela de leads: botao de envio por linha", () => {
     expect(within(tabela).queryByText("Simulado")).not.toBeInTheDocument();
     // A lista não é refeita: o estado novo veio da resposta do envio.
     expect(f.mock.calls.filter((c) => String(c[0]).startsWith("/api/leads"))).toHaveLength(1);
+  });
+});
+
+/**
+ * O caso de uso e' o vendedor abrir o app e ver so' o que e' dele. Por isso o
+ * filtro vai pro servidor, como o de portal: filtrar em memoria sobre os 50
+ * mais recentes esconderia o lead dele que nao coubesse nessa pagina.
+ */
+describe("tela de leads: filtro por vendedor", () => {
+  it("monta o seletor com os vendedores ativos, mais Todos", async () => {
+    mockarApiDeLeads([], null);
+    render(<Leads />);
+    await screen.findByText(/nenhum lead/i);
+
+    const seletor = screen.getByLabelText(/vendedor/i);
+    const rotulos = within(seletor).getAllByRole("option").map((o) => o.textContent);
+    expect(rotulos).toEqual(["Todos", "Murilo", "Beatryz", "Vinicius"]);
+  });
+
+  it("trocar o vendedor refaz a busca no servidor, com ?vendedor=", async () => {
+    const f = mockarApiDeLeads([], null);
+    render(<Leads />);
+    await screen.findByText(/nenhum lead/i);
+    f.mockClear();
+
+    await userEvent.selectOptions(screen.getByLabelText(/vendedor/i), "Beatryz");
+
+    expect(f).toHaveBeenCalledWith("/api/leads?vendedor=Beatryz");
+  });
+
+  it("portal e vendedor juntos vao os dois na query", async () => {
+    const f = mockarApiDeLeads([], null);
+    render(<Leads />);
+    await screen.findByText(/nenhum lead/i);
+
+    await userEvent.selectOptions(screen.getByLabelText(/portal/i), "webmotors");
+    f.mockClear();
+    await userEvent.selectOptions(screen.getByLabelText(/vendedor/i), "Murilo");
+
+    expect(f).toHaveBeenCalledWith("/api/leads?portal=webmotors&vendedor=Murilo");
+  });
+
+  it("voltar para Todos refaz a busca sem o query param", async () => {
+    const f = mockarApiDeLeads([], null);
+    render(<Leads />);
+    await screen.findByText(/nenhum lead/i);
+
+    await userEvent.selectOptions(screen.getByLabelText(/vendedor/i), "Murilo");
+    f.mockClear();
+    await userEvent.selectOptions(screen.getByLabelText(/vendedor/i), "");
+
+    expect(f).toHaveBeenCalledWith("/api/leads");
+  });
+
+  // Sem a coluna, o filtro seria a unica forma de saber de quem e' o lead, e
+  // a lista com "Todos" nao diria nada sobre a divisao do trabalho.
+  it("a linha mostra de quem e' o lead", async () => {
+    mockarApiDeLeads([{ ...LEAD_COM_TELEFONE, vendedor: "Vinicius" }], null);
+    render(<Leads />);
+
+    await screen.findByText("Fulano");
+    expect(within(screen.getByRole("table")).getByText("Vinicius")).toBeInTheDocument();
+  });
+
+  it("lead ainda sem dono aparece como sem vendedor, nao como linha em branco", async () => {
+    mockarApiDeLeads([{ ...LEAD_COM_TELEFONE, vendedor: null }], null);
+    render(<Leads />);
+
+    await screen.findByText("Fulano");
+    expect(within(screen.getByRole("table")).getByText(/sem vendedor/i)).toBeInTheDocument();
+  });
+
+  // A lista de vendedores nao pode derrubar a tela: sem ela o seletor fica
+  // so' com "Todos" e os leads continuam aparecendo.
+  it("falha ao listar vendedores nao impede a lista de leads de carregar", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.startsWith("/api/vendedores")) return { ok: false, status: 500, json: async () => ({ erro: "boom" }) };
+        return { ok: true, status: 200, json: async () => ({ itens: [LEAD_COM_TELEFONE] }) };
+      }),
+    );
+    render(<Leads />);
+
+    expect(await screen.findByText("Fulano")).toBeInTheDocument();
+    const seletor = screen.getByLabelText(/vendedor/i);
+    expect(within(seletor).getAllByRole("option")).toHaveLength(1);
   });
 });

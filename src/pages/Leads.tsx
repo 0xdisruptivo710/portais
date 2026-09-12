@@ -21,17 +21,25 @@ interface LeadItem {
   telefone_e164?: string | null;
   telefone_exibicao: string | null;
   status_ativacao: string | null;
+  vendedor?: string | null;
   capturado_em?: string | null;
   created_at?: string | null;
 }
 
+interface VendedorItem {
+  id: number;
+  nome: string;
+  ordem: number;
+}
+
 /**
- * O endpoint /api/leads já aceita `?portal=` nativamente: o filtro de portal
- * vai na query, não em memória (filtrar em memória sobre só os 50 mais
- * recentes escondia lead de um portal que não coubesse nessa primeira
- * página). Período e status ainda são filtrados aqui, sobre o que já veio —
- * o volume desta base ainda não justifica estender o contrato do endpoint
- * pra esses dois.
+ * O endpoint /api/leads aceita `?portal=` e `?vendedor=` nativamente: esses
+ * dois filtros vão na query, não em memória (filtrar em memória sobre só os
+ * 50 mais recentes escondia lead que não coubesse nessa primeira página, e no
+ * caso do vendedor o buraco seria pior: o caso de uso é ele abrir o app e ver
+ * só o que é dele). Período e status ainda são filtrados aqui, sobre o que já
+ * veio — o volume desta base ainda não justifica estender o contrato do
+ * endpoint pra esses dois.
  *
  * Lista longa: densidade importa mais que respiro. A linha tem que entregar,
  * de relance, portal, nome, telefone, veículo e o estado do envio.
@@ -42,15 +50,31 @@ export default function Leads() {
   const [erro, setErro] = useState<string | null>(null);
 
   const [portalFiltro, setPortalFiltro] = useState("");
+  const [vendedorFiltro, setVendedorFiltro] = useState("");
   const [statusFiltro, setStatusFiltro] = useState("");
   const [inicioFiltro, setInicioFiltro] = useState("");
   const [fimFiltro, setFimFiltro] = useState("");
+  const [vendedores, setVendedores] = useState<VendedorItem[]>([]);
+
+  // A lista de vendedores é um detalhe do seletor, não a tela: se ela falhar,
+  // o filtro fica só com "Todos" e os leads continuam aparecendo. Derrubar a
+  // lista de leads por causa do seletor seria trocar o essencial pelo acessório.
+  useEffect(() => {
+    let ativo = true;
+    buscarJson<{ itens: VendedorItem[] }>("/api/vendedores")
+      .then((resposta) => {
+        if (ativo && Array.isArray(resposta.itens)) setVendedores(resposta.itens);
+      })
+      .catch(() => {});
+    return () => {
+      ativo = false;
+    };
+  }, []);
 
   useEffect(() => {
     let ativo = true;
     setCarregando(true);
-    const url = portalFiltro ? `/api/leads?portal=${portalFiltro}` : "/api/leads";
-    buscarJson<{ itens: LeadItem[] }>(url)
+    buscarJson<{ itens: LeadItem[] }>(urlDosLeads(portalFiltro, vendedorFiltro))
       .then((resposta) => {
         if (ativo) setItens(resposta.itens);
       })
@@ -63,7 +87,7 @@ export default function Leads() {
     return () => {
       ativo = false;
     };
-  }, [portalFiltro]);
+  }, [portalFiltro, vendedorFiltro]);
 
   const itensFiltrados = useMemo(() => {
     return itens.filter((item) => {
@@ -78,7 +102,7 @@ export default function Leads() {
     });
   }, [itens, statusFiltro, inicioFiltro, fimFiltro]);
 
-  const temFiltro = Boolean(portalFiltro || statusFiltro || inicioFiltro || fimFiltro);
+  const temFiltro = Boolean(portalFiltro || vendedorFiltro || statusFiltro || inicioFiltro || fimFiltro);
 
   /**
    * Depois do envio a linha passa a mostrar o estado real sem refazer a
@@ -93,6 +117,7 @@ export default function Leads() {
 
   function limparFiltros() {
     setPortalFiltro("");
+    setVendedorFiltro("");
     setStatusFiltro("");
     setInicioFiltro("");
     setFimFiltro("");
@@ -120,7 +145,7 @@ export default function Leads() {
         </div>
 
         <div
-          className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
+          className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5"
           role="group"
           aria-label="filtros de leads"
         >
@@ -133,6 +158,24 @@ export default function Leads() {
               {PORTAIS.map((portal) => (
                 <option key={portal} value={portal}>
                   {rotuloPortal(portal)}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="campo">
+            <label className="rotulo" htmlFor="leads-vendedor">
+              Vendedor
+            </label>
+            <select
+              id="leads-vendedor"
+              value={vendedorFiltro}
+              onChange={(e) => setVendedorFiltro(e.target.value)}
+            >
+              <option value="">Todos</option>
+              {vendedores.map((vendedor) => (
+                <option key={vendedor.id} value={vendedor.nome}>
+                  {vendedor.nome}
                 </option>
               ))}
             </select>
@@ -200,13 +243,14 @@ export default function Leads() {
         </div>
       ) : (
         <div className="tabela-rolagem tabela-rolagem-longa">
-          <table className="tabela min-w-[860px]">
+          <table className="tabela min-w-[960px]">
             <thead>
               <tr>
                 <th scope="col">Portal</th>
                 <th scope="col">Nome</th>
                 <th scope="col">Telefone</th>
                 <th scope="col">Veículo</th>
+                <th scope="col">Vendedor</th>
                 <th scope="col">Status</th>
                 <th scope="col">Envio</th>
               </tr>
@@ -225,6 +269,12 @@ export default function Leads() {
                       tom das listas do AIOS. */}
                   <td className="previa-linha min-w-[180px]">
                     {item.veiculo_texto ?? <Ausente texto="sem veículo" />}
+                  </td>
+                  {/* Sem esta coluna, a divisão do trabalho só existiria
+                      dentro do filtro: a lista com "Todos" não diria de quem
+                      é cada lead. */}
+                  <td className="whitespace-nowrap">
+                    {item.vendedor ?? <Ausente texto="sem vendedor" />}
                   </td>
                   <td>
                     <SeloStatus status={item.status_ativacao} />
@@ -249,6 +299,19 @@ export default function Leads() {
       )}
     </section>
   );
+}
+
+/**
+ * Monta a query do endpoint. URLSearchParams e não concatenação: nome de
+ * vendedor tem acento e espaço, e "Ana Paula" precisa chegar codificado. Sem
+ * filtro nenhum a URL fica sem "?", que é o mesmo endereço de antes.
+ */
+function urlDosLeads(portal: string, vendedor: string): string {
+  const parametros = new URLSearchParams();
+  if (portal) parametros.set("portal", portal);
+  if (vendedor) parametros.set("vendedor", vendedor);
+  const query = parametros.toString();
+  return query ? `/api/leads?${query}` : "/api/leads";
 }
 
 function Ausente({ texto }: { texto: string }) {
