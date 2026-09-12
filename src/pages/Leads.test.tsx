@@ -391,3 +391,171 @@ describe("tela de leads: a fila de revisao mora aqui", () => {
     expect(await screen.findByText("Fulano")).toBeInTheDocument();
   });
 });
+
+const OUTRO_LEAD = {
+  id: 2,
+  portal: "comprecar",
+  nome: "Sicrano",
+  veiculo_texto: "Onix 2019",
+  telefone_e164: "5515991280218",
+  telefone_exibicao: "+55 (15) 99128-0218",
+  status_ativacao: "pendente",
+  vendedor: "Beatryz",
+};
+
+const SEM_TELEFONE = {
+  id: 3,
+  portal: "olx",
+  nome: "Beltrano",
+  veiculo_texto: null,
+  telefone_e164: null,
+  telefone_exibicao: null,
+  status_ativacao: "pendente",
+  vendedor: "Murilo",
+};
+
+/**
+ * O envio em lote e' o caminho mais perigoso do painel: um clique errado sao'
+ * dezenas de mensagens para clientes reais. A selecao e' a base de tudo, e
+ * "todos" tem que querer dizer o que o filtro mostra, nunca a base inteira.
+ */
+describe("tela de leads: selecao para o envio em lote", () => {
+  it("so' quem tem telefone ganha caixa de marcar", async () => {
+    mockarApiCompleta([LEAD_COM_TELEFONE, OUTRO_LEAD, SEM_TELEFONE], [EVENTO_REVISAO]);
+    render(<Leads />);
+    await screen.findByText("Fulano");
+
+    const tabela = screen.getByRole("table");
+    expect(within(tabela).getByLabelText(/selecionar lead 1/i)).toBeInTheDocument();
+    expect(within(tabela).getByLabelText(/selecionar lead 2/i)).toBeInTheDocument();
+    // Lead sem telefone nao tem para onde enviar, e item de revisao ainda nem
+    // e' lead: marcar qualquer um dos dois so' produziria erro.
+    expect(within(tabela).queryByLabelText(/selecionar lead 3/i)).not.toBeInTheDocument();
+    expect(within(tabela).queryByLabelText(/selecionar lead 9/i)).not.toBeInTheDocument();
+  });
+
+  it("marcar uma linha abre a barra do lote com a contagem", async () => {
+    mockarApiCompleta([LEAD_COM_TELEFONE, OUTRO_LEAD], []);
+    render(<Leads />);
+    await screen.findByText("Fulano");
+
+    await userEvent.click(screen.getByLabelText(/selecionar lead 1/i));
+
+    expect(screen.getByText(/1 selecionado/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /enviar para os selecionados/i })).toBeInTheDocument();
+  });
+
+  it("selecionar todos os visiveis marca o que o filtro mostra, e so' isso", async () => {
+    mockarApiCompleta([LEAD_COM_TELEFONE, OUTRO_LEAD, SEM_TELEFONE], []);
+    render(<Leads />);
+    await screen.findByText("Fulano");
+
+    await userEvent.click(screen.getByLabelText(/selecionar todos os vis/i));
+
+    // Tres leads na tela, dois com telefone.
+    expect(screen.getByText(/2 selecionados/i)).toBeInTheDocument();
+  });
+
+  /**
+   * O filtro e' quem define o conjunto. Uma selecao feita sobre outra lista,
+   * carregada para um filtro novo, e' o caminho mais curto para mandar
+   * mensagem para quem o operador nao esta' vendo.
+   */
+  it("trocar o filtro limpa a selecao", async () => {
+    mockarApiCompleta([LEAD_COM_TELEFONE, OUTRO_LEAD], []);
+    render(<Leads />);
+    await screen.findByText("Fulano");
+    await userEvent.click(screen.getByLabelText(/selecionar todos os vis/i));
+    expect(screen.getByText(/2 selecionados/i)).toBeInTheDocument();
+
+    await userEvent.selectOptions(screen.getByLabelText(/vendedor/i), "Beatryz");
+
+    expect(screen.queryByText(/selecionado/i)).not.toBeInTheDocument();
+  });
+
+  it("a barra diz de qual filtro veio a selecao, em palavras", async () => {
+    mockarApiCompleta([LEAD_COM_TELEFONE, OUTRO_LEAD], []);
+    render(<Leads />);
+    await screen.findByText("Fulano");
+
+    await userEvent.selectOptions(screen.getByLabelText(/vendedor/i), "Beatryz");
+    await screen.findByText("Fulano");
+    await userEvent.click(screen.getByLabelText(/selecionar todos os vis/i));
+
+    expect(screen.getByText(/vendedor beatryz/i)).toBeInTheDocument();
+  });
+
+  it("sem filtro nenhum, a barra deixa claro que sao todos os leads da lista", async () => {
+    mockarApiCompleta([LEAD_COM_TELEFONE], []);
+    render(<Leads />);
+    await screen.findByText("Fulano");
+
+    await userEvent.click(screen.getByLabelText(/selecionar todos os vis/i));
+
+    expect(screen.getByText(/todos os leads da lista/i)).toBeInTheDocument();
+  });
+
+  it("limpar selecao fecha a barra", async () => {
+    mockarApiCompleta([LEAD_COM_TELEFONE], []);
+    render(<Leads />);
+    await screen.findByText("Fulano");
+    await userEvent.click(screen.getByLabelText(/selecionar lead 1/i));
+
+    await userEvent.click(screen.getByRole("button", { name: /limpar sele/i }));
+
+    expect(screen.queryByRole("button", { name: /enviar para os selecionados/i })).not.toBeInTheDocument();
+  });
+
+  it("o lote atualiza o status da linha, sem recarregar a lista", async () => {
+    const f = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.startsWith("/api/vendedores")) return { ok: true, status: 200, json: async () => ({ itens: VENDEDORES }) };
+      if (url.startsWith("/api/revisao")) return { ok: true, status: 200, json: async () => ({ itens: [] }) };
+      if (url === "/api/lote/previa") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            selecionados: 1,
+            no_lote: 1,
+            acima_do_teto: 0,
+            teto: 60,
+            ids: [1],
+            vao_sair: 1,
+            pessoas: 1,
+            repetidos: 0,
+            bloqueados: 0,
+            motivos: [],
+            pausa_segundos: 12,
+            janela: { aberta: true, inicio: "08:00", fim: "20:00" },
+            conversa_wts_confere_no_envio: true,
+          }),
+        };
+      }
+      if (url === "/api/lote/enviar") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            resultados: [
+              { lead_id: 1, situacao: "enviado", motivo: null, verificado: false, verificacao_detalhe: "QUEUED" },
+            ],
+            restantes: [],
+            parado: null,
+          }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({ itens: [LEAD_COM_TELEFONE] }) };
+    });
+    vi.stubGlobal("fetch", f);
+    render(<Leads />);
+    await screen.findByText("Fulano");
+
+    await userEvent.click(screen.getByLabelText(/selecionar lead 1/i));
+    await userEvent.click(screen.getByRole("button", { name: /enviar para os selecionados/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /confirmar envio/i }));
+
+    await screen.findByText(/lote conclu[íi]do/i);
+    expect(await within(screen.getByRole("table")).findByText("Enviado")).toBeInTheDocument();
+    expect(f.mock.calls.filter((c) => String(c[0]).startsWith("/api/leads"))).toHaveLength(1);
+  });
+});

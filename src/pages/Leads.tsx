@@ -13,6 +13,7 @@ import {
   SearchX,
 } from "lucide-react";
 import BotaoEnviar from "../components/BotaoEnviar";
+import EnvioEmLote from "../components/EnvioEmLote";
 import PainelRevisao, { type EventoRevisao } from "../components/PainelRevisao";
 import { buscarJson } from "../lib/api";
 import {
@@ -89,6 +90,7 @@ export default function Leads() {
   const [inicioFiltro, setInicioFiltro] = useState("");
   const [fimFiltro, setFimFiltro] = useState("");
   const [vendedores, setVendedores] = useState<VendedorItem[]>([]);
+  const [selecionados, setSelecionados] = useState<number[]>([]);
   // Trocar a geração refaz a busca dos leads. É o que traz para a lista o
   // lead que acabou de nascer de uma revisão completada.
   const [geracao, setGeracao] = useState(0);
@@ -196,6 +198,51 @@ export default function Leads() {
   }, [linhas, statusFiltro, inicioFiltro, fimFiltro]);
 
   const temFiltro = Boolean(portalFiltro || vendedorFiltro || statusFiltro || inicioFiltro || fimFiltro);
+
+  /**
+   * Quem pode entrar num lote: lead de verdade e com telefone. Item de revisão
+   * ainda não é lead, e lead sem telefone (OLX, Mercado Livre) não tem para
+   * onde enviar — marcar qualquer um dos dois só produziria erro.
+   */
+  const selecionaveis = useMemo(
+    () =>
+      linhasFiltradas
+        .filter((linha) => linha.tipo === "lead" && (linha.telefoneE164 ?? linha.telefoneExibicao))
+        .map((linha) => linha.id),
+    [linhasFiltradas],
+  );
+
+  /**
+   * Trocar qualquer filtro limpa a seleção. O filtro é quem define o conjunto,
+   * e uma seleção feita sobre outra lista, carregada para um filtro novo, é o
+   * caminho mais curto para mandar mensagem para quem o operador não está
+   * vendo na tela.
+   */
+  useEffect(() => {
+    setSelecionados([]);
+  }, [portalFiltro, vendedorFiltro, statusFiltro, inicioFiltro, fimFiltro]);
+
+  const marcados = new Set(selecionados);
+  const todosMarcados = selecionaveis.length > 0 && selecionaveis.every((id) => marcados.has(id));
+
+  function alternar(id: number) {
+    setSelecionados((atuais) =>
+      atuais.includes(id) ? atuais.filter((outro) => outro !== id) : [...atuais, id],
+    );
+  }
+
+  function alternarTodos() {
+    setSelecionados(todosMarcados ? [] : selecionaveis);
+  }
+
+  /**
+   * O resultado do lote, lead a lead, na linha correspondente. "bloqueado" é
+   * o mesmo estado que o envio de um lead só grava quando uma guarda barra:
+   * suprimido.
+   */
+  function aplicarResultadoDoLote(leadId: number, situacao: "enviado" | "bloqueado" | "falhou") {
+    aplicarStatus(leadId, situacao === "enviado" ? "enviado" : situacao === "falhou" ? "falhou" : "suprimido");
+  }
 
   /**
    * Depois do envio a linha passa a mostrar o estado real sem refazer a
@@ -349,6 +396,24 @@ export default function Leads() {
         </div>
       )}
 
+      {/* A barra do lote só existe quando há seleção: ela é a antessala do
+          caminho mais perigoso do painel, e não tem por que ficar de pé
+          enquanto o operador só está lendo a lista. */}
+      {selecionados.length > 0 && (
+        <EnvioEmLote
+          ids={selecionados}
+          descricaoFiltro={descreverFiltro({
+            portal: portalFiltro,
+            vendedor: vendedorFiltro,
+            status: statusFiltro,
+            inicio: inicioFiltro,
+            fim: fimFiltro,
+          })}
+          aoResultado={aplicarResultadoDoLote}
+          aoLimparSelecao={() => setSelecionados([])}
+        />
+      )}
+
       {erro && (
         <p role="alert" className="faixa-erro">
           <AlertCircle aria-hidden="true" className="mt-px h-4 w-4 shrink-0" />
@@ -374,6 +439,15 @@ export default function Leads() {
           <table className="tabela min-w-[960px]">
             <thead>
               <tr>
+                <th scope="col" className="w-9">
+                  <input
+                    type="checkbox"
+                    aria-label="Selecionar todos os visíveis"
+                    checked={todosMarcados}
+                    onChange={alternarTodos}
+                    disabled={selecionaveis.length === 0}
+                  />
+                </th>
                 <th scope="col">Portal</th>
                 <th scope="col">Nome</th>
                 <th scope="col">Telefone</th>
@@ -387,6 +461,16 @@ export default function Leads() {
               {linhasFiltradas.map((linha) => (
                 <Fragment key={linha.chave}>
                   <tr>
+                    <td>
+                      {linha.tipo === "lead" && (linha.telefoneE164 ?? linha.telefoneExibicao) ? (
+                        <input
+                          type="checkbox"
+                          aria-label={`Selecionar lead ${linha.id}`}
+                          checked={marcados.has(linha.id)}
+                          onChange={() => alternar(linha.id)}
+                        />
+                      ) : null}
+                    </td>
                     <td>
                       <span className="selo">{rotuloPortal(linha.portal)}</span>
                     </td>
@@ -442,7 +526,7 @@ export default function Leads() {
                       exigiria foco próprio e devolveria o operador ao topo. */}
                   {linha.tipo === "revisao" && expandido === linha.id && linha.evento && (
                     <tr>
-                      <td colSpan={7} className="bg-aios-fundo/60 p-3">
+                      <td colSpan={8} className="bg-aios-fundo/60 p-3">
                         <PainelRevisao
                           evento={linha.evento}
                           aoCompletar={() => aoCompletarRevisao(linha.id)}
@@ -471,6 +555,26 @@ function urlDosLeads(portal: string, vendedor: string): string {
   if (vendedor) parametros.set("vendedor", vendedor);
   const query = parametros.toString();
   return query ? `/api/leads?${query}` : "/api/leads";
+}
+
+/**
+ * O filtro em palavras, para a confirmação do lote citar. "Todos" nunca pode
+ * querer dizer a base inteira: quer dizer o que a tela está mostrando, e o
+ * operador precisa ler isso escrito antes de liberar dezenas de mensagens.
+ */
+function descreverFiltro(f: {
+  portal: string;
+  vendedor: string;
+  status: string;
+  inicio: string;
+  fim: string;
+}): string {
+  const partes: string[] = [];
+  if (f.portal) partes.push(`Portal ${rotuloPortal(f.portal)}`);
+  if (f.vendedor) partes.push(`Vendedor ${f.vendedor}`);
+  if (f.status) partes.push(`Status ${rotuloStatus(f.status)}`);
+  if (f.inicio || f.fim) partes.push(`Período de ${f.inicio || "sempre"} até ${f.fim || "hoje"}`);
+  return partes.length > 0 ? partes.join(", ") : "todos os leads da lista";
 }
 
 function Ausente({ texto }: { texto: string }) {
