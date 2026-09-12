@@ -3,6 +3,7 @@ import { exigirOrigemConfiavel } from "./_lib/origem.js";
 import { exigirAdmin } from "./_lib/sessao.js";
 import { getSupabase } from "./_lib/supabase.js";
 import { paraE164, paraExibicao } from "./_lib/telefone.js";
+import { definirVendedor } from "./_lib/vendedores.js";
 
 /**
  * GET lista a fila de revisão humana: eventos que nem o parser nem a IA
@@ -72,6 +73,16 @@ async function completar(request: Request): Promise<Response> {
   const email = typeof bruto.email === "string" ? bruto.email : null;
   const mensagemLead = typeof bruto.mensagem_lead === "string" ? bruto.mensagem_lead : null;
 
+  // Lead que saiu da revisão é lead como qualquer outro: recebe dono pelas
+  // mesmas duas regras da varredura (herança por telefone e rodízio da fila).
+  // Reenviar a mesma revisão corrigindo um dígito não troca o vendedor: a
+  // distribuição olha o evento antes de decidir.
+  const vendedor = await definirVendedor({
+    clienteSlug: "malentachi",
+    telefoneE164: e164,
+    eventoId,
+  });
+
   const { data: leadGravado, error: erroLead } = await sb
     .from("portais_leads")
     .upsert(
@@ -79,6 +90,7 @@ async function completar(request: Request): Promise<Response> {
         evento_id: eventoId,
         cliente_slug: "malentachi",
         portal: evento.portal,
+        vendedor,
         nome,
         telefone_e164: e164,
         telefone_exibicao: paraExibicao(e164),

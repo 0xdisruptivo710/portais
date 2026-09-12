@@ -6,6 +6,7 @@ import { extrairComIa } from "./ia.js";
 import { ehLead } from "./ehLead.js";
 import { paraE164, paraExibicao } from "./telefone.js";
 import { casarComEstoque } from "./estoque.js";
+import { definirVendedor } from "./vendedores.js";
 
 export type ResultadoProcesso = "lead" | "revisao" | "sem_dados" | "ignorado";
 
@@ -149,6 +150,17 @@ async function gravarLead(
 
   const e164 = paraE164(lead?.telefone ?? null);
 
+  // Lead novo já nasce com dono. As duas regras moram em vendedores.ts: o
+  // mesmo telefone volta para quem já falou com ele, e o resto entra no
+  // rodízio da sua fila (ligar x abrir portal). Nunca lança: sem vendedor
+  // ativo, ou com o banco fora do ar, volta null e o lead é gravado assim
+  // mesmo — a ingestão não pode parar por causa da distribuição.
+  const vendedor = await definirVendedor({
+    clienteSlug: "malentachi",
+    telefoneE164: e164,
+    eventoId,
+  });
+
   const { data, error } = await sb
     .from("portais_leads")
     .upsert(
@@ -156,6 +168,7 @@ async function gravarLead(
         evento_id: eventoId,
         cliente_slug: "malentachi",
         portal,
+        vendedor,
         nome: lead?.nome ?? null,
         telefone_e164: e164,
         telefone_exibicao: paraExibicao(e164),

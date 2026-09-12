@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./_lib/supabase", () => ({ getSupabase: vi.fn() }));
+vi.mock("./_lib/vendedores", () => ({ definirVendedor: vi.fn() }));
 import { getSupabase } from "./_lib/supabase";
+import { definirVendedor } from "./_lib/vendedores";
 
 import { assinarSessao, COOKIE_ADMIN } from "./_lib/sessao";
 
@@ -110,6 +112,8 @@ function mockarSupabase(estado: EstadoFrom = {}) {
 
 beforeEach(() => {
   vi.mocked(getSupabase).mockReset();
+  vi.mocked(definirVendedor).mockReset();
+  vi.mocked(definirVendedor).mockResolvedValue(null);
 });
 
 describe("GET /api/revisao", () => {
@@ -182,6 +186,31 @@ describe("POST /api/revisao", () => {
     expect(chamadasUpsertLead[0].payload.evento_id).toBe(9);
     expect(chamadasUpsertLead[0].payload.telefone_e164).toBe("5515991280217");
     expect(chamadasUpdateEvento.some((c) => c.status === "parseado")).toBe(true);
+  });
+
+  // Lead completado na revisão é lead como qualquer outro: sai da fila com
+  // dono, pelas mesmas duas regras da varredura automática.
+  it("o lead completado sai com vendedor, pela mesma distribuição da varredura", async () => {
+    const { chamadasUpsertLead } = mockarSupabase({ evento: { id: 9, portal: "webmotors" } });
+    vi.mocked(definirVendedor).mockResolvedValue("Beatryz");
+
+    await postar({ evento_id: 9, nome: "Fulano", telefone: "15991280217" });
+
+    expect(definirVendedor).toHaveBeenCalledWith({
+      clienteSlug: "malentachi",
+      telefoneE164: "5515991280217",
+      eventoId: 9,
+    });
+    expect(chamadasUpsertLead[0].payload.vendedor).toBe("Beatryz");
+  });
+
+  it("sem vendedor ativo a revisão é completada assim mesmo, com vendedor nulo", async () => {
+    const { chamadasUpsertLead } = mockarSupabase({ evento: { id: 9, portal: "webmotors" } });
+
+    const r = await postar({ evento_id: 9, nome: "Fulano", telefone: "15991280217" });
+
+    expect(r.status).toBe(201);
+    expect(chamadasUpsertLead[0].payload.vendedor).toBeNull();
   });
 
   it("500 quando o upsert do lead não devolve linha", async () => {

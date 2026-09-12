@@ -5,10 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./supabase", () => ({ getSupabase: vi.fn() }));
 vi.mock("./parsers/index", () => ({ parserDoPortal: vi.fn() }));
 vi.mock("./ia", () => ({ extrairComIa: vi.fn() }));
+vi.mock("./vendedores", () => ({ definirVendedor: vi.fn() }));
 
 import { getSupabase } from "./supabase";
 import { parserDoPortal } from "./parsers/index";
 import { extrairComIa } from "./ia";
+import { definirVendedor } from "./vendedores";
 import { processarEvento } from "./processar";
 
 const LEAD_PARSER = {
@@ -129,6 +131,10 @@ beforeEach(() => {
   vi.mocked(getSupabase).mockReset();
   vi.mocked(parserDoPortal).mockReset();
   vi.mocked(extrairComIa).mockReset();
+  vi.mocked(definirVendedor).mockReset();
+  // Default do módulo real quando não há vendedor ativo: lead sem dono. Os
+  // testes que se importam com a distribuição trocam o retorno.
+  vi.mocked(definirVendedor).mockResolvedValue(null);
 });
 
 describe("processarEvento", () => {
@@ -329,5 +335,62 @@ describe("processarEvento", () => {
 
       expect(chamadasUpsertLead[0].payload.capturado_em).toBe("2026-06-01T08:00:00.000Z");
     });
+  });
+});
+
+/**
+ * O lead novo tem que sair da varredura já com dono. Antes disso a coluna
+ * `vendedor` ficava nula em tudo que entrava, e a distribuição só existia no
+ * backfill feito uma vez à mão.
+ */
+describe("distribuição de vendedor no lead novo", () => {
+  it("grava o lead com o vendedor que a distribuição escolheu", async () => {
+    const { chamadasUpsertLead } = mockarSupabase({ evento: eventoBase({ portal: "webmotors" }) });
+    vi.mocked(parserDoPortal).mockReturnValue(() => LEAD_PARSER);
+    vi.mocked(definirVendedor).mockResolvedValue("Beatryz");
+
+    await processarEvento(1);
+
+    expect(chamadasUpsertLead[0].payload.vendedor).toBe("Beatryz");
+  });
+
+  it("pergunta pelo telefone normalizado e pelo evento, que são as duas regras da distribuição", async () => {
+    mockarSupabase({ evento: eventoBase({ portal: "webmotors" }) });
+    vi.mocked(parserDoPortal).mockReturnValue(() => LEAD_PARSER);
+
+    await processarEvento(1);
+
+    expect(definirVendedor).toHaveBeenCalledWith({
+      clienteSlug: "malentachi",
+      telefoneE164: "5515991280217",
+      eventoId: 1,
+    });
+  });
+
+  it("lead sem telefone (OLX, Mercado Livre) entra na fila de quem não tem telefone", async () => {
+    const { chamadasUpsertLead } = mockarSupabase({
+      evento: eventoBase({ portal: "olx", assunto: "Oba! Tem mensagem nova de Fulano" }),
+    });
+    vi.mocked(definirVendedor).mockResolvedValue("Vinicius");
+
+    await processarEvento(1);
+
+    expect(definirVendedor).toHaveBeenCalledWith({
+      clienteSlug: "malentachi",
+      telefoneE164: null,
+      eventoId: 1,
+    });
+    expect(chamadasUpsertLead[0].payload.vendedor).toBe("Vinicius");
+  });
+
+  it("sem vendedor ativo o lead é gravado assim mesmo, com vendedor nulo", async () => {
+    const { chamadasUpsertLead } = mockarSupabase({ evento: eventoBase({ portal: "webmotors" }) });
+    vi.mocked(parserDoPortal).mockReturnValue(() => LEAD_PARSER);
+    vi.mocked(definirVendedor).mockResolvedValue(null);
+
+    const resultado = await processarEvento(1);
+
+    expect(resultado).toBe("lead");
+    expect(chamadasUpsertLead[0].payload.vendedor).toBeNull();
   });
 });
