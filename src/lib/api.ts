@@ -68,14 +68,35 @@ export async function buscarJson<T>(url: string): Promise<T> {
 }
 
 /**
- * Checagem de entrada do App, e o único lugar que fala com a API sem passar
- * por chamarApi. É de propósito: aqui o 401 é o primeiro acesso, o caminho
- * normal para mostrar o login, e não uma sessão que caiu. Se ela avisasse os
- * ouvintes, a entrada no painel viraria um laço de "sessão expirada" para
- * quem nunca entrou.
+ * Troca a chave do embed por uma sessão de 12h (ver api/sessao.ts). O AIOS
+ * embeda o painel como `<iframe src=".../?k=<EMBED_TOKEN>">`, e esta é a
+ * primeira coisa que o App faz quando encontra o `k` na URL.
+ *
+ * Não passa por chamarApi, de propósito: aqui o 401 quer dizer "chave
+ * errada", não "sessão caiu". Se avisasse os ouvintes, a própria tentativa
+ * de abrir sessão derrubaria a sessão, e a renovação viraria laço.
+ */
+export async function abrirSessaoComChave(chave: string): Promise<boolean> {
+  try {
+    const resposta = await fetch("/api/sessao", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chave }),
+    });
+    return resposta.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Checagem de entrada para quem chega sem chave na URL: vale a sessão que já
+ * estiver de pé. Também não passa por chamarApi, pelo mesmo motivo: aqui o
+ * 401 é o caminho normal para a tela de acesso negado, não uma sessão que
+ * caiu debaixo do painel.
  *
  * Falha de rede vale como sem sessão: a guarda que decide de verdade é a do
- * servidor, e o pior que acontece aqui é pedir a senha de novo.
+ * servidor, e o pior que acontece aqui é recarregar o embed.
  */
 export async function temSessao(): Promise<boolean> {
   try {

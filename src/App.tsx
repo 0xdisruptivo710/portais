@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BrowserRouter, NavLink, Route, Routes } from "react-router-dom";
 import { Loader2 } from "lucide-react";
-import { aoPerderSessao, chamarApi, temSessao } from "./lib/api";
+import { abrirSessaoComChave, aoPerderSessao, chamarApi, temSessao } from "./lib/api";
+import AcessoNegado from "./pages/AcessoNegado";
 import Config from "./pages/Config";
 import Leads from "./pages/Leads";
-import Login from "./pages/Login";
 import Numeros from "./pages/Numeros";
 import Revisao from "./pages/Revisao";
 
@@ -14,42 +14,78 @@ import Revisao from "./pages/Revisao";
  * duas barras empilhadas denunciam que o conteúdo veio de fora. A navegação
  * entre as quatro telas é feita por abas em pílula, no padrão da plataforma.
  */
-export default function App() {
-  const [autenticado, setAutenticado] = useState<boolean | null>(null);
-  const [expirada, setExpirada] = useState(false);
+/**
+ * Estados da porta de entrada. "verificando" é o instante entre montar e
+ * saber se há acesso; não existe estado intermediário visível.
+ */
+type EstadoAcesso = "verificando" | "liberado" | "negado";
 
-  // A guarda que vale é a do servidor (api/_lib/sessao.ts) — esta é só a
-  // porta visível: sem sessão, mostra o login em vez de quatro telas vazias
-  // com "nao autorizado". Erro de rede também cai no login, nunca no painel.
+/**
+ * A chave do embed vem na URL (`?k=`), posta lá pelo AIOS no src do iframe.
+ * É lida UMA vez, na montagem, e guardada: a navegação entre as abas troca a
+ * URL por react-router e leva a query string embora, então reler
+ * window.location depois acharia a URL sem chave. Guardar aqui é o que faz a
+ * renovação continuar funcionando na terceira aba.
+ */
+function lerChaveDaUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  const chave = new URLSearchParams(window.location.search).get("k");
+  return chave && chave.length > 0 ? chave : null;
+}
+
+export default function App() {
+  const [chave] = useState(lerChaveDaUrl);
+  const [acesso, setAcesso] = useState<EstadoAcesso>("verificando");
+  // Trocar a geração remonta o painel inteiro: depois de renovar a sessão,
+  // as telas precisam refazer as chamadas que tinham voltado 401. Sem isso o
+  // painel ficaria de pé mostrando o que não conseguiu carregar.
+  const [geracao, setGeracao] = useState(0);
+  const renovacao = useRef({ emCurso: false, gasta: false });
+
+  // Com chave na URL, a troca por sessão é a primeira chamada de todas, antes
+  // de qualquer tela pedir dado. Sem chave, vale a sessão que já exista: é o
+  // caso de quem abriu o painel direto, fora do embed, com o cookie ainda
+  // válido. Chave errada não cai de volta na sessão existente: é recusa.
   useEffect(() => {
     let ativo = true;
-    temSessao().then((tem) => {
-      if (ativo) setAutenticado(tem);
+    const promessa = chave ? abrirSessaoComChave(chave) : temSessao();
+    promessa.then((liberado) => {
+      if (ativo) setAcesso(liberado ? "liberado" : "negado");
     });
     return () => {
       ativo = false;
     };
-  }, []);
+  }, [chave]);
 
-  // O cookie dura 12h e a aba costuma passar a noite aberta. Quando ele
-  // expira, o painel continuava montado e cada tela exibia "nao autorizado"
-  // como se fosse um erro de conteúdo — o operador não tinha como saber que
-  // precisava entrar de novo. Agora qualquer 401 de qualquer endpoint
-  // derruba a sessão aqui, e o painel inteiro sai de cena.
+  // Qualquer 401 de qualquer endpoint derruba a sessão aqui (ver chamarApi
+  // em lib/api.ts). Antes de desistir, se a chave do embed estiver na URL,
+  // vale UMA troca: é o que faz a expiração de 12h se resolver sozinha
+  // dentro do iframe, sem o operador perceber.
   //
-  // A inscrição só existe enquanto o painel está montado: a checagem de
-  // entrada, que recebe 401 quando ninguém entrou ainda, não passa por este
-  // caminho (ver temSessao em lib/api.ts) e não podia virar "sessão expirou"
-  // no primeiro acesso.
+  // Duas travas contra laço: `emCurso` junta a enxurrada de 401 que chega ao
+  // mesmo tempo (a aba de contagem e a tela aberta falham juntas) numa troca
+  // só, e `gasta` garante que a tentativa é uma por carga da página. Se a
+  // troca falhar, ou se a sessão cair de novo depois dela, é acesso negado —
+  // e recarregar o iframe refaz tudo, porque a chave continua no src.
   useEffect(() => {
-    if (autenticado !== true) return;
+    if (acesso !== "liberado") return;
     return aoPerderSessao(() => {
-      setExpirada(true);
-      setAutenticado(false);
-    });
-  }, [autenticado]);
+      if (renovacao.current.emCurso) return;
+      if (!chave || renovacao.current.gasta) {
+        setAcesso("negado");
+        return;
+      }
 
-  if (autenticado === null) {
+      renovacao.current.emCurso = true;
+      abrirSessaoComChave(chave).then((renovou) => {
+        renovacao.current = { emCurso: false, gasta: true };
+        if (renovou) setGeracao((anterior) => anterior + 1);
+        else setAcesso("negado");
+      });
+    });
+  }, [acesso, chave]);
+
+  if (acesso === "verificando") {
     return (
       <div className="conteudo">
         <p className="carregando">
@@ -60,20 +96,10 @@ export default function App() {
     );
   }
 
-  if (!autenticado) {
-    return (
-      <Login
-        expirada={expirada}
-        aoEntrar={() => {
-          setExpirada(false);
-          setAutenticado(true);
-        }}
-      />
-    );
-  }
+  if (acesso === "negado") return <AcessoNegado />;
 
   return (
-    <BrowserRouter>
+    <BrowserRouter key={geracao}>
       <div className="min-h-screen bg-aios-fundo">
         <div className="conteudo">
           <Abas />

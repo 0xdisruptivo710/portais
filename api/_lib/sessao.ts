@@ -87,8 +87,12 @@ export function exigirCron(request: Request): Response | null {
  * Comparação em tempo constante. timingSafeEqual estoura com tamanhos
  * diferentes, então o tamanho é conferido antes — é a única informação que
  * este caminho vaza, e ela não ajuda quem tenta adivinhar o segredo.
+ *
+ * Exportada porque api/sessao.ts compara a chave do embed com a mesma regra:
+ * segredo conferido por comparação ingênua vaza o prefixo certo no tempo de
+ * resposta, e isso vale tanto aqui quanto lá.
  */
-function iguais(a: string, b: string): boolean {
+export function iguais(a: string, b: string): boolean {
   const ba = Buffer.from(a);
   const bb = Buffer.from(b);
   return ba.length === bb.length && timingSafeEqual(ba, bb);

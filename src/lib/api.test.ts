@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { aoPerderSessao, buscarJson, chamarApi, temSessao } from "./api";
+import { abrirSessaoComChave, aoPerderSessao, buscarJson, chamarApi, temSessao } from "./api";
 
 function mockFetch(status: number, corpo: unknown = {}) {
   const f = vi.fn().mockResolvedValue({ ok: status < 400, status, json: async () => corpo });
@@ -84,5 +84,34 @@ describe("checagem de entrada", () => {
   it("falha de rede vale como sem sessao, nunca como painel liberado", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
     await expect(temSessao()).resolves.toBe(false);
+  });
+});
+
+describe("troca da chave do embed por sessao", () => {
+  it("manda a chave no corpo, em json, para /api/sessao", async () => {
+    const f = mockFetch(204);
+
+    await expect(abrirSessaoComChave("chave-do-embed")).resolves.toBe(true);
+    expect(f).toHaveBeenCalledWith(
+      "/api/sessao",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ chave: "chave-do-embed" }) }),
+    );
+  });
+
+  it("chave recusada devolve false e NAO avisa os ouvintes", async () => {
+    // Aqui 401 quer dizer "chave errada", nao "sessao caiu". Se avisasse, a
+    // propria renovacao derrubaria a sessao e viraria laco.
+    mockFetch(401, { erro: "nao autorizado" });
+    const avisado = vi.fn();
+    const cancelar = aoPerderSessao(avisado);
+
+    await expect(abrirSessaoComChave("chute")).resolves.toBe(false);
+    expect(avisado).not.toHaveBeenCalled();
+    cancelar();
+  });
+
+  it("falha de rede devolve false, nunca libera", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+    await expect(abrirSessaoComChave("chave-do-embed")).resolves.toBe(false);
   });
 });
