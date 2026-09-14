@@ -1,10 +1,20 @@
 import { PORTAIS, type Portal } from "../src/tipos.js";
+import { janelaConversaDias } from "./_lib/conversa.js";
 import { erro, json } from "./_lib/http.js";
 import { exigirAdmin } from "./_lib/sessao.js";
 import { getSupabase } from "./_lib/supabase.js";
 import { listarVendedores } from "./_lib/vendedores.js";
 
 const LIMITE_PADRAO = 50;
+
+/**
+ * Os três valores do filtro de atendimento. Não é um booleano de propósito:
+ * três coisas diferentes se escondiam atrás de "não está em atendimento", e
+ * só uma delas é fila limpa (ver EstadoAtendimento em _lib/atendimento.ts).
+ * "sem_telefone" fica de fora porque não é fila de ninguém: é lead de portal
+ * que só manda aviso, e o filtro de portal já dá conta dele.
+ */
+const ATENDIMENTOS = ["em_atendimento", "sem_conversa", "nao_conferido"];
 
 // Único cliente ativo por enquanto (mesmo hardcode de config.ts e
 // processar.ts). Quando existir mais de um, o slug vem de sessão/rota.
@@ -49,6 +59,11 @@ export async function GET(request: Request): Promise<Response> {
     if (!nomes.includes(vendedor)) return erro("vendedor invalido", 400);
   }
 
+  const atendimento = url.searchParams.get("atendimento");
+  if (atendimento !== null && !ATENDIMENTOS.includes(atendimento)) {
+    return erro("atendimento invalido", 400);
+  }
+
   const pagina = Math.max(1, Number(url.searchParams.get("pagina") ?? "1") || 1);
   const inicio = (pagina - 1) * LIMITE_PADRAO;
   const fim = inicio + LIMITE_PADRAO - 1;
@@ -57,8 +72,60 @@ export async function GET(request: Request): Promise<Response> {
   let consulta = sb.from("portais_leads").select("*");
   if (portal) consulta = consulta.eq("portal", portal);
   if (vendedor) consulta = consulta.eq("vendedor", vendedor);
+  if (atendimento) consulta = filtrarPorAtendimento(consulta, atendimento, await lerJanelaDias(sb));
   const { data, error } = await consulta.order("created_at", { ascending: false }).range(inicio, fim);
 
   if (error) return erro(error.message, 500);
   return json({ itens: data ?? [] });
+}
+
+/**
+ * A janela de recência do cliente, lida só quando o filtro de atendimento é
+ * usado. Config ilegível não derruba a lista: `janelaConversaDias` já cai no
+ * padrão do código, que é o mesmo que a guarda de envio usa.
+ */
+async function lerJanelaDias(sb: ReturnType<typeof getSupabase>): Promise<number> {
+  const { data } = await sb
+    .from("portais_config")
+    .select("*")
+    .eq("cliente_slug", CLIENTE_SLUG)
+    .single();
+  return janelaConversaDias((data as { janela_conversa_dias?: unknown } | null)?.janela_conversa_dias);
+}
+
+/**
+ * O filtro de atendimento, aplicado no BANCO como os outros dois.
+ *
+ * O critério é a DATA da última mensagem comparada com a janela agora, nunca
+ * um booleano gravado: é a mesma conta da guarda de envio (conversaEmAndamento
+ * em _lib/conversa.ts), e é isso que impede a tela de dizer "em atendimento"
+ * sobre um lead que o envio libera.
+ *
+ * "sem_conversa" exige `conversa_conferida_em` preenchido. Quem nunca foi
+ * conferido não é fila limpa: é desconhecido, e prometer o contrário
+ * devolveria ao vendedor a mesma fila suja de antes, com outro nome.
+ */
+function filtrarPorAtendimento<T extends ConsultaFiltravel>(consulta: T, atendimento: string, janelaDias: number): T {
+  const corte = new Date(Date.now() - janelaDias * 86_400_000).toISOString();
+
+  if (atendimento === "em_atendimento") {
+    return consulta.gte("conversa_ultima_mensagem_em", corte) as T;
+  }
+  if (atendimento === "sem_conversa") {
+    return consulta
+      .not("conversa_conferida_em", "is", null)
+      .or(`conversa_ultima_mensagem_em.is.null,conversa_ultima_mensagem_em.lt.${corte}`) as T;
+  }
+  // nao_conferido: só quem tem telefone, porque só esses são conferíveis. Sem
+  // isso o filtro viraria uma lista de OLX e Mercado Livre, que nunca vão sair
+  // de "não conferido".
+  return consulta.not("telefone_e164", "is", null).is("conversa_conferida_em", null) as T;
+}
+
+/** Só os métodos que o filtro acima encadeia. O cliente do Supabase traz muito mais. */
+interface ConsultaFiltravel {
+  gte(coluna: string, valor: string): ConsultaFiltravel;
+  not(coluna: string, operador: string, valor: unknown): ConsultaFiltravel;
+  is(coluna: string, valor: unknown): ConsultaFiltravel;
+  or(filtro: string): ConsultaFiltravel;
 }

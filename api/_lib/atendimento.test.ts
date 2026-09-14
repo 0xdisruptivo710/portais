@@ -173,6 +173,25 @@ describe("atualizarAtendimento", () => {
     expect(r.itens[0].detalhe).toBe("WTS 503");
   });
 
+  /**
+   * A outra metade da mesma disciplina: nao SABER e' diferente de saber sem
+   * conseguir GUARDAR. Se o WTS respondeu, a resposta vale; o que se perdeu
+   * foi o cache, e o preco disso e' uma consulta a mais na proxima abertura.
+   */
+  it("falha ao gravar mantem o que o WTS respondeu, com o detalhe", async () => {
+    const d = deps({
+      consultar: vi.fn(async () => ({ ultimaMensagemEm: null, falhou: false, detalhe: null })),
+      gravar: vi.fn(async () => {
+        throw new Error("column does not exist");
+      }),
+    });
+
+    const r = await atualizarAtendimento([1], d);
+
+    expect(r.itens[0].estado).toBe("sem_conversa");
+    expect(r.itens[0].detalhe).toContain("column does not exist");
+  });
+
   it("um lead que estoura nao derruba os outros do lote", async () => {
     const d = deps({
       lerLeads: vi.fn(async () => [lead({ id: 1 }), lead({ id: 2 })]),

@@ -155,6 +155,10 @@ export async function atualizarAtendimento(
     if (!lead) continue;
 
     let detalhe: string | null = null;
+    // Duas falhas diferentes, com consequências diferentes: não SABER (a
+    // consulta ao WTS não voltou) e saber sem conseguir GUARDAR (o update no
+    // banco não gravou). Só a primeira proíbe a resposta de afirmar algo.
+    let naoSoube = false;
 
     if (precisaConferir(lead, agora) && consultados < teto) {
       consultados++;
@@ -162,22 +166,33 @@ export async function atualizarAtendimento(
         const consulta = await deps.consultar(lead.telefone_e164 as string);
         if (consulta.falhou) {
           detalhe = consulta.detalhe;
+          naoSoube = true;
         } else {
           lead.conversa_ultima_mensagem_em = consulta.ultimaMensagemEm?.toISOString() ?? null;
           lead.conversa_conferida_em = agora.toISOString();
-          await deps.gravar(lead.id, {
-            conversa_ultima_mensagem_em: lead.conversa_ultima_mensagem_em,
-            conversa_conferida_em: lead.conversa_conferida_em,
-          });
+          try {
+            await deps.gravar(lead.id, {
+              conversa_ultima_mensagem_em: lead.conversa_ultima_mensagem_em,
+              conversa_conferida_em: lead.conversa_conferida_em,
+            });
+          } catch (e) {
+            // O WTS respondeu: a informação desta resposta é boa. O que se
+            // perdeu foi o cache, e o preço disso é uma consulta a mais na
+            // próxima abertura da lista, não uma resposta pior agora.
+            detalhe = `conferido, mas nao foi possivel guardar: ${textoDoErro(e)}`;
+          }
         }
       } catch (e) {
-        detalhe = e instanceof Error && e.message ? e.message : "falha ao conferir conversa no WTS";
+        detalhe = textoDoErro(e);
+        naoSoube = true;
       }
     }
 
     itens.push({
       lead_id: lead.id,
-      estado: detalhe ? estadoQuandoNaoDeu(lead, agora, deps.janelaDias) : estadoDeAtendimento(lead, { janelaDias: deps.janelaDias, agora }),
+      estado: naoSoube
+        ? estadoQuandoNaoSoube(lead, agora, deps.janelaDias)
+        : estadoDeAtendimento(lead, { janelaDias: deps.janelaDias, agora }),
       ultima_mensagem_em: lead.conversa_ultima_mensagem_em ?? null,
       conferido_em: lead.conversa_conferida_em ?? null,
       detalhe,
@@ -188,14 +203,18 @@ export async function atualizarAtendimento(
 }
 
 /**
- * Consulta que falhou tendo cache velho: o cache ainda vale para dizer "em
- * atendimento" (a conversa existia e a data não mudou por causa da falha),
- * mas não pode virar "sem conversa" — isso seria afirmar, por cima de uma
- * falha, exatamente o que ninguém conseguiu conferir.
+ * Consulta que não voltou, tendo cache velho: o cache ainda vale para dizer
+ * "em atendimento" (a conversa existia e a falha não apagou isso), mas não
+ * pode virar "sem conversa" — isso seria afirmar, por cima de uma ignorância,
+ * exatamente o que ninguém conseguiu conferir.
  */
-function estadoQuandoNaoDeu(lead: LeadParaAtendimento, agora: Date, janelaDias: number): EstadoAtendimento {
+function estadoQuandoNaoSoube(lead: LeadParaAtendimento, agora: Date, janelaDias: number): EstadoAtendimento {
   const estado = estadoDeAtendimento(lead, { janelaDias, agora });
   return estado === "em_atendimento" ? estado : "nao_conferido";
+}
+
+function textoDoErro(e: unknown): string {
+  return e instanceof Error && e.message ? e.message : "falha ao conferir conversa no WTS";
 }
 
 /** Texto do banco vira Date, ou null. Data inválida nunca pode virar Invalid Date. */

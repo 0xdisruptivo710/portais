@@ -12,6 +12,21 @@ import { buscarContatoPorTelefone, wtsRequest } from "./wts.js";
  */
 export const JANELA_CONVERSA_PADRAO_DIAS = 7;
 
+/**
+ * Quantos dias de silêncio uma conversa precisa ter para deixar de contar
+ * como negociação em andamento. Config quando existe, padrão quando não:
+ * valor ausente, nulo, zero, negativo ou não numérico cai no padrão em vez de
+ * desligar a guarda. Uma linha de config errada não pode abrir a porta que
+ * este arquivo inteiro existe para fechar.
+ *
+ * Mora aqui, e não em quem lê a config, porque agora são três leitores (a
+ * guarda do envio, a lista e a conferência em lote) e os três precisam
+ * responder a mesma coisa sobre o mesmo lead.
+ */
+export function janelaConversaDias(valor: unknown): number {
+  return typeof valor === "number" && Number.isFinite(valor) && valor > 0 ? valor : JANELA_CONVERSA_PADRAO_DIAS;
+}
+
 /** Só os campos que esta decisão lê. O item do WTS traz muito mais. */
 export interface SessaoWts {
   contactId?: string | null;

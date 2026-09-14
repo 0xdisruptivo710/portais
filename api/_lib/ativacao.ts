@@ -1,5 +1,5 @@
 import type { ModoEnvio } from "../../src/tipos.js";
-import { conferirConversaNoWts, JANELA_CONVERSA_PADRAO_DIAS } from "./conversa.js";
+import { conferirConversaNoWts, janelaConversaDias } from "./conversa.js";
 import { getSupabase } from "./supabase.js";
 import { decidirSupressao } from "./supressao.js";
 import { montarEnvio, montarTexto, wtsRequest } from "./wts.js";
@@ -328,7 +328,7 @@ export async function ativarLeadDetalhado(
   if (acao === "enviar" && e164) {
     const conversa = await conferirConversaNoWts({
       e164,
-      janelaDias: janelaConversaDias(cfg),
+      janelaDias: janelaConversaDias(cfg.janela_conversa_dias),
       agora,
     });
 
@@ -462,18 +462,6 @@ export async function ativarLeadDetalhado(
     verificacaoDetalhe: verificacao.detalhe,
     podeForcar: false,
   };
-}
-
-/**
- * Quantos dias de silêncio uma conversa precisa ter para deixar de contar
- * como negociação em andamento. Config quando existe, default quando não:
- * valor ausente, nulo, zero, negativo ou não numérico cai no padrão em vez
- * de desligar a guarda — uma linha de config errada não pode abrir a porta
- * que este arquivo inteiro existe para fechar.
- */
-function janelaConversaDias(cfg: ConfigBanco): number {
-  const v = cfg.janela_conversa_dias;
-  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : JANELA_CONVERSA_PADRAO_DIAS;
 }
 
 /**

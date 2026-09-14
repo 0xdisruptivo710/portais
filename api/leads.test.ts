@@ -2,11 +2,26 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const range = vi.fn();
 const order = vi.fn(() => ({ range }));
-// `eq` devolve a si mesmo: portal e vendedor podem ser filtrados juntos, e um
-// encadeamento que quebrasse no segundo .eq tem que quebrar o teste tambem.
-const eq: ReturnType<typeof vi.fn> = vi.fn(() => ({ eq, order }));
-const select = vi.fn(() => ({ eq, order }));
-vi.mock("./_lib/supabase", () => ({ getSupabase: () => ({ from: () => ({ select }) }) }));
+// Toda peca do filtro devolve a MESMA cadeia: portal, vendedor e atendimento
+// podem ser filtrados juntos, e um encadeamento que quebrasse no segundo
+// filtro tem que quebrar o teste tambem.
+const eq: ReturnType<typeof vi.fn> = vi.fn(() => cadeia);
+const nao: ReturnType<typeof vi.fn> = vi.fn(() => cadeia);
+const gte: ReturnType<typeof vi.fn> = vi.fn(() => cadeia);
+const ehNulo: ReturnType<typeof vi.fn> = vi.fn(() => cadeia);
+const ou: ReturnType<typeof vi.fn> = vi.fn(() => cadeia);
+const cadeia = { eq, not: nao, gte, is: ehNulo, or: ou, order };
+const select = vi.fn(() => cadeia);
+
+const single = vi.fn();
+const eqConfig = vi.fn(() => ({ single }));
+const selectConfig = vi.fn(() => ({ eq: eqConfig }));
+
+vi.mock("./_lib/supabase", () => ({
+  getSupabase: () => ({
+    from: (tabela: string) => (tabela === "portais_config" ? { select: selectConfig } : { select }),
+  }),
+}));
 vi.mock("./_lib/vendedores", () => ({ listarVendedores: vi.fn() }));
 
 import { listarVendedores } from "./_lib/vendedores";
@@ -18,6 +33,8 @@ const SEGREDO_SESSAO = "segredo-de-teste-bem-longo-mesmo";
 
 beforeEach(() => {
   process.env.ADMIN_SESSION_SECRET = SEGREDO_SESSAO;
+  single.mockReset();
+  single.mockResolvedValue({ data: { janela_conversa_dias: 7 }, error: null });
   vi.mocked(listarVendedores).mockReset();
   vi.mocked(listarVendedores).mockResolvedValue([
     { id: 1, nome: "Murilo", wts_user_id: null, ativo: true, ordem: 1 },
@@ -118,6 +135,67 @@ describe("GET /api/leads: filtro por vendedor", () => {
   it("sem o parametro, nao gasta consulta conferindo vendedor nenhum", async () => {
     await handler(comSessao("https://x/api/leads"));
     expect(listarVendedores).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * O filtro de atendimento vai para o SERVIDOR pelo mesmo motivo dos outros
+ * dois: o caso de uso e' o vendedor querer so' a fila que sobra depois de
+ * tirar quem a equipe ja' esta' atendendo, e filtrar em memoria sobre os 50
+ * mais recentes esconderia o lead que nao coubesse nessa pagina.
+ *
+ * O criterio nao e' um booleano gravado: e' a DATA da ultima mensagem
+ * comparada com a janela de recencia agora. E' a mesma conta que a guarda de
+ * envio faz, e por isso a tela e o envio nunca discordam sobre o mesmo lead.
+ */
+describe("GET /api/leads: filtro por atendimento", () => {
+  beforeEach(() => {
+    range.mockReset();
+    range.mockResolvedValue({ data: [], error: null });
+    eq.mockClear();
+    nao.mockClear();
+    gte.mockClear();
+    ehNulo.mockClear();
+    ou.mockClear();
+  });
+
+  it("em_atendimento filtra por ultima mensagem dentro da janela", async () => {
+    const r = await handler(comSessao("https://x/api/leads?atendimento=em_atendimento"));
+    expect(r.status).toBe(200);
+    expect(gte).toHaveBeenCalledWith("conversa_ultima_mensagem_em", expect.any(String));
+  });
+
+  // "Sem conversa" so' pode incluir quem foi CONFERIDO. Quem nunca foi
+  // conferido nao e' fila limpa: e' desconhecido, e prometer o contrario
+  // devolveria ao vendedor a mesma fila suja de antes, com outro nome.
+  it("sem_conversa exige conferencia feita, nunca so' a ausencia de data", async () => {
+    await handler(comSessao("https://x/api/leads?atendimento=sem_conversa"));
+    expect(nao).toHaveBeenCalledWith("conversa_conferida_em", "is", null);
+    expect(ou).toHaveBeenCalledWith(expect.stringContaining("conversa_ultima_mensagem_em"));
+  });
+
+  it("nao_conferido pega quem tem telefone e ninguem conferiu ainda", async () => {
+    await handler(comSessao("https://x/api/leads?atendimento=nao_conferido"));
+    expect(nao).toHaveBeenCalledWith("telefone_e164", "is", null);
+    expect(ehNulo).toHaveBeenCalledWith("conversa_conferida_em", null);
+  });
+
+  it("recusa valor fora do catalogo em vez de repassar ao banco", async () => {
+    const r = await handler(comSessao("https://x/api/leads?atendimento=inventado"));
+    expect(r.status).toBe(400);
+    expect(gte).not.toHaveBeenCalled();
+  });
+
+  it("sem o parametro, nao le config nem filtra por conversa", async () => {
+    await handler(comSessao("https://x/api/leads"));
+    expect(single).not.toHaveBeenCalled();
+    expect(gte).not.toHaveBeenCalled();
+  });
+
+  it("config ilegivel nao derruba a lista: vale a janela padrao", async () => {
+    single.mockResolvedValue({ data: null, error: { message: "sem config" } });
+    const r = await handler(comSessao("https://x/api/leads?atendimento=em_atendimento"));
+    expect(r.status).toBe(200);
   });
 });
 
