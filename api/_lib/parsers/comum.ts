@@ -11,6 +11,20 @@ export function textoDoEmail(email: EmailCru): string {
   return htmlParaTexto(email.html) || email.texto;
 }
 
+/**
+ * Os dois corpos do e-mail, com o `text/plain` PRIMEIRO. O inverso de
+ * `textoDoEmail`, e serve ao portal que faz o inverso dos outros: o CARRO SP
+ * manda a ficha inteira rotulada no plain ("MODELO..........: Renegade 1.8")
+ * e, no HTML, o mesmo carro dentro de um <h3> sem rótulo nenhum.
+ *
+ * Os dois entram juntos, e não um ou outro, porque `capturar` devolve a
+ * PRIMEIRA ocorrência: a ficha do plain ganha quando existe, e o HTML fica de
+ * rede de segurança para o dia em que o portal parar de mandar plain.
+ */
+export function textoPlainEHtml(email: EmailCru): string {
+  return [email.texto, htmlParaTexto(email.html)].filter((parte) => parte.trim() !== "").join("\n\n");
+}
+
 /** Primeiro grupo de captura, ou null. Evita repetir `?.[1] ?? null` em todo parser. */
 export function capturar(texto: string, re: RegExp): string | null {
   return texto.match(re)?.[1]?.trim() || null;
