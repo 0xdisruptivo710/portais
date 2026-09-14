@@ -690,3 +690,61 @@ describe("coluna de atendimento", () => {
     expect(within(screen.getByRole("table")).queryByText(/em atendimento/i)).not.toBeInTheDocument();
   });
 });
+
+/**
+ * O pedido do operador: o vendedor precisa saber quando aquele cliente
+ * chegou. A coluna usa capturado_em (a data do e-mail), nunca created_at (a
+ * data em que o sistema gravou a linha) — ver api/_lib/processar.ts.
+ */
+describe("tela de leads: coluna de data", () => {
+  it("a coluna Data fica logo depois de Portal", async () => {
+    mockarApiDeLeads([LEAD_COM_TELEFONE], null);
+    render(<Leads />);
+    await screen.findByText("Fulano");
+
+    const cabecalhos = within(screen.getByRole("table"))
+      .getAllByRole("columnheader")
+      .map((c) => c.textContent);
+    expect(cabecalhos.indexOf("Data")).toBe(cabecalhos.indexOf("Portal") + 1);
+  });
+
+  // Ano fixo, bem no passado: independe de quando o teste roda, e o ano tem
+  // que aparecer porque diverge do ano atual (ver dataAbsolutaLead).
+  it("mostra a data absoluta, no fuso de Sao Paulo", async () => {
+    mockarApiDeLeads([{ ...LEAD_COM_TELEFONE, capturado_em: "2020-05-04T12:00:00Z" }], null);
+    render(<Leads />);
+    await screen.findByText("Fulano");
+
+    expect(within(screen.getByRole("table")).getByText("04/05/20")).toBeInTheDocument();
+  });
+
+  it("lead sem capturado_em nem created_at mostra o rotulo proprio, nao quebra a linha", async () => {
+    mockarApiDeLeads([{ ...LEAD_COM_TELEFONE, capturado_em: null, created_at: null }], null);
+    render(<Leads />);
+    await screen.findByText("Fulano");
+
+    expect(within(screen.getByRole("table")).getByText(/sem data/i)).toBeInTheDocument();
+  });
+
+  /**
+   * O caso real do resgate da Lixeira: e-mail de ha' 90 dias, gravado no
+   * banco agora mesmo (created_at de hoje). Se a coluna usasse created_at,
+   * esse lead apareceria como "hoje" — exatamente o problema que o
+   * operador quer resolver. Ela tem que continuar dizendo que e' antigo.
+   */
+  it("usa capturado_em, nao created_at, quando os dois existem e divergem", async () => {
+    const noventaDiasAtras = new Date(Date.now() - 90 * 86_400_000).toISOString();
+    const agoraIso = new Date().toISOString();
+    mockarApiDeLeads(
+      [{ ...LEAD_COM_TELEFONE, capturado_em: noventaDiasAtras, created_at: agoraIso }],
+      null,
+    );
+    render(<Leads />);
+    await screen.findByText("Fulano");
+
+    const tabela = within(screen.getByRole("table"));
+    expect(tabela.queryByText(/^hoje$/i)).not.toBeInTheDocument();
+    expect(tabela.queryByText(/^ontem$/i)).not.toBeInTheDocument();
+    expect(tabela.getByText(/há \d+ (dias|semanas|meses)/i)).toBeInTheDocument();
+  });
+});

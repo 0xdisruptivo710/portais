@@ -19,6 +19,7 @@ import BotaoEnviar from "../components/BotaoEnviar";
 import EnvioEmLote from "../components/EnvioEmLote";
 import PainelRevisao, { type EventoRevisao } from "../components/PainelRevisao";
 import { buscarJson, chamarApi } from "../lib/api";
+import { dataAbsolutaLead, tempoDesdeLead, temDataValida } from "../lib/datas";
 import {
   ATENDIMENTO_OPCOES,
   PORTAIS,
@@ -365,6 +366,10 @@ export default function Leads() {
 
   const contagem = linhasFiltradas.length === 1 ? "1 lead" : `${linhasFiltradas.length} leads`;
 
+  // Um retrato de "agora" por render, nao um por linha: as duas colunas de
+  // data (absoluta e relativa) tem que concordar entre si e entre as linhas.
+  const agora = new Date();
+
   return (
     <section className="flex flex-col gap-4">
       {/* A plataforma já mostra onde o usuário está; repetir o nome da tela em
@@ -560,7 +565,7 @@ export default function Leads() {
         </div>
       ) : (
         <div className="tabela-rolagem tabela-rolagem-longa">
-          <table className="tabela min-w-[1080px]">
+          <table className="tabela min-w-[1170px]">
             <thead>
               <tr>
                 <th scope="col" className="w-9">
@@ -573,6 +578,11 @@ export default function Leads() {
                   />
                 </th>
                 <th scope="col">Portal</th>
+                {/* Logo depois de Portal: as duas colunas juntas dizem de
+                    onde e quando o lead veio, antes de entrar em quem ele é.
+                    Sem esta coluna um lead de hoje e um de dois meses atrás
+                    pareciam a mesma coisa na lista. */}
+                <th scope="col">Data</th>
                 <th scope="col">Nome</th>
                 <th scope="col">Telefone</th>
                 <th scope="col">Veículo</th>
@@ -600,6 +610,24 @@ export default function Leads() {
                     </td>
                     <td>
                       <span className="selo">{rotuloPortal(linha.portal)}</span>
+                    </td>
+                    {/* Relativa em cima, para o vendedor bater o olho e
+                        saber a idade sem fazer conta; absoluta embaixo, em
+                        cinza, para desambiguar entre dois leads que caem no
+                        mesmo "há 3 dias". As duas leem capturado_em (ou
+                        recebido_em no item de revisão), nunca created_at:
+                        ver api/_lib/processar.ts, dataCapturaEm. */}
+                    <td className="whitespace-nowrap tabular-nums">
+                      {temDataValida(linha.data) ? (
+                        <>
+                          <span className="block">{tempoDesdeLead(linha.data, agora)}</span>
+                          <span className="block text-[12px] text-aios-texto-suave">
+                            {dataAbsolutaLead(linha.data, agora)}
+                          </span>
+                        </>
+                      ) : (
+                        <Ausente texto="sem data" />
+                      )}
                     </td>
                     <td className="font-medium">{linha.nome ?? <Ausente texto="sem nome" />}</td>
                     <td className="whitespace-nowrap tabular-nums">
@@ -660,7 +688,7 @@ export default function Leads() {
                       exigiria foco próprio e devolveria o operador ao topo. */}
                   {linha.tipo === "revisao" && expandido === linha.id && linha.evento && (
                     <tr>
-                      <td colSpan={9} className="bg-aios-fundo/60 p-3">
+                      <td colSpan={10} className="bg-aios-fundo/60 p-3">
                         <PainelRevisao
                           evento={linha.evento}
                           aoCompletar={() => aoCompletarRevisao(linha.id)}

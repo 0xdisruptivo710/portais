@@ -84,6 +84,20 @@ describe("GET /api/leads", () => {
     const r = await handler(comSessao("https://x/api/leads"));
     expect(r.status).toBe(500);
   });
+
+  /**
+   * Ordenar por created_at (quando a linha foi gravada) parecia o mesmo que
+   * ordenar por capturado_em (quando o e-mail chegou), ate' o resgate da
+   * Lixeira gravar leads de julho e agosto com created_at de hoje. Se o
+   * corte de 50 (o LIMIT da paginacao) continuasse olhando created_at, esse
+   * lote antigo podia empurrar lead novo de verdade pra fora da primeira
+   * pagina. capturado_em e' o unico critério que responde "quem chegou
+   * primeiro" de verdade.
+   */
+  it("ordena por capturado_em, nao por created_at", async () => {
+    await handler(comSessao("https://x/api/leads"));
+    expect(order).toHaveBeenCalledWith("capturado_em", { ascending: false });
+  });
 });
 
 /**

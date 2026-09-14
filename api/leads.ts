@@ -73,7 +73,14 @@ export async function GET(request: Request): Promise<Response> {
   if (portal) consulta = consulta.eq("portal", portal);
   if (vendedor) consulta = consulta.eq("vendedor", vendedor);
   if (atendimento) consulta = filtrarPorAtendimento(consulta, atendimento, await lerJanelaDias(sb));
-  const { data, error } = await consulta.order("created_at", { ascending: false }).range(inicio, fim);
+  // Ordena por capturado_em (quando o e-mail chegou), nao por created_at
+  // (quando a linha foi gravada). Os dois costumam coincidir a poucos
+  // minutos, exceto depois de um resgate de Lixeira: ele grava lead de
+  // meses atras com created_at de hoje. Se o corte de 50 desta pagina
+  // (o LIMIT abaixo) continuasse olhando created_at, esse lote antigo podia
+  // empurrar lead novo de verdade pra fora da primeira pagina - o oposto do
+  // que a coluna Data do painel promete mostrar.
+  const { data, error } = await consulta.order("capturado_em", { ascending: false }).range(inicio, fim);
 
   if (error) return erro(error.message, 500);
   return json({ itens: data ?? [] });
