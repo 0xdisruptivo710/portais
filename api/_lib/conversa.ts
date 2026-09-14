@@ -84,34 +84,12 @@ export interface ArgsConversa {
  * Mensagem trocada recentemente é fato observável. É esse o critério.
  */
 export function decidirConversaAberta(a: ArgsConversa): ResultadoConversa {
-  // Rede de segurança contra o comportamento conhecido da API (.NET): todo
-  // parâmetro que ela não reconhece é ignorado EM SILÊNCIO, e a listagem
-  // volta com a conta inteira em vez de dar erro. Se `ContactId` mudar de
-  // nome um dia, sem esta conferência a consulta passaria a devolver as
-  // sessões de todo mundo e o app suprimiria a base inteira sem avisar.
-  const doContato = a.sessoes.filter((s) => s.contactId === a.contatoId);
+  const { ultimaMensagemEm, semDono } = resumirSessoesDoContato(a.sessoes, a.contatoId);
+  if (semDono) return falha(SEM_DONO);
+  if (!ultimaMensagemEm) return LIBERADO;
 
-  if (doContato.length === 0 && a.sessoes.length > 0 && a.sessoes.every((s) => !s.contactId)) {
-    // Veio sessão, mas sem dono identificável: não dá para dizer que é deste
-    // contato nem que não é. Contrato mudado não pode virar "não há conversa".
-    return {
-      suprimir: true,
-      falhou: true,
-      motivo: "nao foi possivel conferir conversa no WTS: sessao sem contactId na resposta",
-    };
-  }
-
-  let maisRecente: Date | null = null;
-  for (const sessao of doContato) {
-    const quando = ultimaMensagemDaSessao(sessao);
-    if (quando && (!maisRecente || quando.getTime() > maisRecente.getTime())) maisRecente = quando;
-  }
-  if (!maisRecente) return LIBERADO;
-
-  const ms = a.agora.getTime() - maisRecente.getTime();
-  // `<=` e não `<`: a borda exata fica do lado que não manda mensagem. Data no
-  // futuro (relógio fora de hora dos dois lados) cai aqui também, como deve.
-  if (ms <= a.janelaDias * 86_400_000) {
+  if (conversaEmAndamento(ultimaMensagemEm, a.janelaDias, a.agora)) {
+    const ms = a.agora.getTime() - ultimaMensagemEm.getTime();
     return {
       suprimir: true,
       falhou: false,
@@ -119,6 +97,58 @@ export function decidirConversaAberta(a: ArgsConversa): ResultadoConversa {
     };
   }
   return LIBERADO;
+}
+
+const SEM_DONO = "sessao sem contactId na resposta";
+
+/**
+ * A data da mensagem mais recente trocada com aquele contato, entre todas as
+ * sessões dele.
+ *
+ * `semDono` é a rede de segurança contra o comportamento conhecido da API
+ * (.NET): todo parâmetro que ela não reconhece é ignorado EM SILÊNCIO, e a
+ * listagem volta com a conta inteira em vez de dar erro. Se `ContactId` mudar
+ * de nome um dia, sem esta conferência a consulta passaria a devolver as
+ * sessões de todo mundo e o app suprimiria a base inteira sem avisar. Veio
+ * sessão sem dono identificável não é "não há conversa": é não saber.
+ */
+function resumirSessoesDoContato(
+  sessoes: SessaoWts[],
+  contatoId: string,
+): { ultimaMensagemEm: Date | null; semDono: boolean } {
+  const doContato = sessoes.filter((s) => s.contactId === contatoId);
+
+  if (doContato.length === 0 && sessoes.length > 0 && sessoes.every((s) => !s.contactId)) {
+    return { ultimaMensagemEm: null, semDono: true };
+  }
+
+  let maisRecente: Date | null = null;
+  for (const sessao of doContato) {
+    const quando = ultimaMensagemDaSessao(sessao);
+    if (quando && (!maisRecente || quando.getTime() > maisRecente.getTime())) maisRecente = quando;
+  }
+  return { ultimaMensagemEm: maisRecente, semDono: false };
+}
+
+/**
+ * O critério de recência, isolado de onde a data veio.
+ *
+ * Existe separado porque agora ele é lido em dois lugares: na guarda do envio
+ * (que decide se a mensagem sai) e na lista do painel (que mostra ao vendedor
+ * que aquele lead já está em atendimento). As duas telas têm que dar a mesma
+ * resposta sobre o mesmo lead, e a única forma de garantir isso é uma conta
+ * só, escrita uma vez.
+ *
+ * `<=` e não `<`: a borda exata fica do lado que não manda mensagem. Data no
+ * futuro (relógio fora de hora dos dois lados) cai aqui também, como deve.
+ */
+export function conversaEmAndamento(
+  ultimaMensagemEm: Date | null,
+  janelaDias: number,
+  agora: Date,
+): boolean {
+  if (!ultimaMensagemEm) return false;
+  return agora.getTime() - ultimaMensagemEm.getTime() <= janelaDias * 86_400_000;
 }
 
 /**
@@ -135,19 +165,65 @@ export async function conferirConversaNoWts(a: {
   janelaDias: number;
   agora: Date;
 }): Promise<ResultadoConversa> {
+  const consulta = await consultarConversaNoWts(a.e164);
+  if (consulta.falhou) return falha(consulta.detalhe ?? "motivo desconhecido");
+  if (!consulta.ultimaMensagemEm) return LIBERADO;
+
+  if (conversaEmAndamento(consulta.ultimaMensagemEm, a.janelaDias, a.agora)) {
+    const ms = a.agora.getTime() - consulta.ultimaMensagemEm.getTime();
+    return {
+      suprimir: true,
+      falhou: false,
+      motivo: `ja existe conversa no WTS, ultima mensagem ${rotuloDesde(ms)}`,
+    };
+  }
+  return LIBERADO;
+}
+
+/** O que o WTS respondeu sobre aquele telefone, sem nenhuma decisão em cima. */
+export interface ConsultaConversa {
+  /**
+   * A mensagem mais recente trocada com esse telefone, de quem quer que seja.
+   * null quando não existe conversa nenhuma.
+   */
+  ultimaMensagemEm: Date | null;
+  /**
+   * `true` quer dizer "não foi possível SABER", que é diferente de "não
+   * existe conversa". Quem chama precisa tratar os dois de forma diferente:
+   * na guarda de envio o primeiro adia e o segundo libera; na lista do painel
+   * o primeiro fica "não conferido" e NADA é gravado no banco.
+   */
+  falhou: boolean;
+  /** Por que não foi possível saber. null quando a consulta deu certo. */
+  detalhe: string | null;
+}
+
+const SEM_CONVERSA: ConsultaConversa = { ultimaMensagemEm: null, falhou: false, detalhe: null };
+
+/**
+ * As duas chamadas ao WTS que respondem "esse telefone já está conversando
+ * com a loja?": busca o contato pelo número e lista as sessões dele.
+ *
+ * Separada de `conferirConversaNoWts` porque a mesma leitura serve a dois
+ * usos com decisões diferentes: a guarda do envio (que suprime) e a coluna de
+ * atendimento da lista (que só informa). Duplicar a leitura seria duplicar o
+ * custo na cota do WTS e, pior, arriscar duas respostas diferentes sobre o
+ * mesmo lead na mesma tela.
+ */
+export async function consultarConversaNoWts(e164: string): Promise<ConsultaConversa> {
   let contatoId: string;
   try {
-    const contato = await buscarContatoPorTelefone(a.e164);
+    const contato = await buscarContatoPorTelefone(e164);
     // Contato inexistente é resposta, não falha: quem nunca falou com a loja
     // não tem conversa aberta. buscarContatoPorTelefone já traduz o 500 dessa
     // rota (o contrato do WTS para "não existe") em null.
-    if (!contato) return LIBERADO;
+    if (!contato) return SEM_CONVERSA;
     if (typeof contato.id !== "string" || contato.id.trim() === "") {
-      return falha("busca de contato sem id utilizavel");
+      return naoDeu("busca de contato sem id utilizavel");
     }
     contatoId = contato.id;
   } catch (e) {
-    return falha(textoDoErro(e));
+    return naoDeu(textoDoErro(e));
   }
 
   let sessoes: SessaoWts[];
@@ -160,10 +236,16 @@ export async function conferirConversaNoWts(a: {
     )) as { items?: SessaoWts[] } | null;
     sessoes = resposta?.items ?? [];
   } catch (e) {
-    return falha(textoDoErro(e));
+    return naoDeu(textoDoErro(e));
   }
 
-  return decidirConversaAberta({ sessoes, contatoId, janelaDias: a.janelaDias, agora: a.agora });
+  const { ultimaMensagemEm, semDono } = resumirSessoesDoContato(sessoes, contatoId);
+  if (semDono) return naoDeu(SEM_DONO);
+  return { ultimaMensagemEm, falhou: false, detalhe: null };
+}
+
+function naoDeu(detalhe: string): ConsultaConversa {
+  return { ultimaMensagemEm: null, falhou: true, detalhe };
 }
 
 function falha(detalhe: string): ResultadoConversa {

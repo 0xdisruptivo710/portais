@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   conferirConversaNoWts,
+  consultarConversaNoWts,
+  conversaEmAndamento,
   decidirConversaAberta,
   JANELA_CONVERSA_PADRAO_DIAS,
   ultimaMensagemDaSessao,
@@ -256,5 +258,106 @@ describe("conferirConversaNoWts", () => {
 describe("JANELA_CONVERSA_PADRAO_DIAS", () => {
   it("e um numero de dias positivo", () => {
     expect(JANELA_CONVERSA_PADRAO_DIAS).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * A MESMA consulta de rede da guarda de envio, devolvendo o dado cru em vez
+ * da decisão. É o que permite a lista do painel responder "esse lead já está
+ * em atendimento" sem duplicar a leitura do WTS nem a regra da janela.
+ */
+describe("consultarConversaNoWts", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubEnv("WTS_TOKEN", "token-de-teste");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  function responder(porUrl: (url: string) => unknown) {
+    fetchMock.mockImplementation(async (url: unknown) => {
+      const corpo = porUrl(String(url));
+      return { ok: true, status: 200, text: async () => JSON.stringify(corpo) };
+    });
+  }
+
+  it("devolve a data da ultima mensagem, sem decidir nada sobre janela", async () => {
+    responder((url) =>
+      url.includes("/contact/")
+        ? { id: CONTATO }
+        : { items: [{ contactId: CONTATO, lastMessageIn: "2026-09-12T13:00:00Z" }] },
+    );
+
+    const r = await consultarConversaNoWts("5515991280217");
+
+    expect(r.ultimaMensagemEm?.toISOString()).toBe("2026-09-12T13:00:00.000Z");
+    expect(r.falhou).toBe(false);
+    expect(r.detalhe).toBeNull();
+  });
+
+  // Contato inexistente e' RESPOSTA: quem nunca falou com a loja nao tem
+  // conversa. Isso nao pode se confundir com falha de consulta.
+  it("contato inexistente e' ausencia de conversa, nao falha", async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500, text: async () => "nao existe" });
+
+    const r = await consultarConversaNoWts("5515991280217");
+
+    expect(r).toEqual({ ultimaMensagemEm: null, falhou: false, detalhe: null });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("falha de rede volta como falhou, com o detalhe, e NUNCA como sem conversa", async () => {
+    fetchMock.mockImplementation(async (url: unknown) => {
+      if (String(url).includes("/contact/")) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ id: CONTATO }) };
+      }
+      return { ok: false, status: 503, text: async () => "indisponivel" };
+    });
+
+    const r = await consultarConversaNoWts("5515991280217");
+
+    expect(r.falhou).toBe(true);
+    expect(r.ultimaMensagemEm).toBeNull();
+    expect(r.detalhe).toContain("503");
+  });
+
+  it("listagem que volta sem dono (contrato mudado) tambem e' falha", async () => {
+    responder((url) =>
+      url.includes("/contact/") ? { id: CONTATO } : { items: [{ lastMessageIn: "2026-09-12T13:00:00Z" }] },
+    );
+
+    const r = await consultarConversaNoWts("5515991280217");
+
+    expect(r.falhou).toBe(true);
+    expect(r.detalhe).toContain("sessao sem contactId");
+  });
+});
+
+/**
+ * O criterio de recencia isolado de onde a data veio. E' a mesma conta na
+ * hora do envio e na lista do painel: sem isso, a tela poderia dizer "em
+ * atendimento" para um lead que o envio libera, ou o contrario.
+ */
+describe("conversaEmAndamento", () => {
+  it("conta como em andamento dentro da janela", () => {
+    expect(conversaEmAndamento(new Date("2026-09-12T13:00:00Z"), 7, AGORA)).toBe(true);
+  });
+
+  it("nao conta fora da janela", () => {
+    expect(conversaEmAndamento(new Date("2026-05-01T13:00:00Z"), 7, AGORA)).toBe(false);
+  });
+
+  it("sem data nenhuma nao e' conversa em andamento", () => {
+    expect(conversaEmAndamento(null, 7, AGORA)).toBe(false);
+  });
+
+  it("data no futuro (relogio fora de hora) conta como em andamento", () => {
+    expect(conversaEmAndamento(new Date("2026-09-13T15:00:00Z"), 7, AGORA)).toBe(true);
   });
 });
