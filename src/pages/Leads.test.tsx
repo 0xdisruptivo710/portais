@@ -694,7 +694,7 @@ describe("coluna de atendimento", () => {
 /**
  * O pedido do operador: o vendedor precisa saber quando aquele cliente
  * chegou. A coluna usa capturado_em (a data do e-mail), nunca created_at (a
- * data em que o sistema gravou a linha) — ver api/_lib/processar.ts.
+ * data em que o sistema gravou a linha), ver api/_lib/processar.ts.
  */
 describe("tela de leads: coluna de data", () => {
   it("a coluna Data fica logo depois de Portal", async () => {
@@ -729,7 +729,7 @@ describe("tela de leads: coluna de data", () => {
   /**
    * O caso real do resgate da Lixeira: e-mail de ha' 90 dias, gravado no
    * banco agora mesmo (created_at de hoje). Se a coluna usasse created_at,
-   * esse lead apareceria como "hoje" — exatamente o problema que o
+   * esse lead apareceria como "hoje", exatamente o problema que o
    * operador quer resolver. Ela tem que continuar dizendo que e' antigo.
    */
   it("usa capturado_em, nao created_at, quando os dois existem e divergem", async () => {
