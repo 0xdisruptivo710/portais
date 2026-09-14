@@ -2,7 +2,7 @@ import { simpleParser } from "mailparser";
 import { erro, json } from "../_lib/http.js";
 import { exigirCron } from "../_lib/sessao.js";
 import { getSupabase } from "../_lib/supabase.js";
-import { abrirCaixa, caixaDeTodosOsEmails } from "../_lib/imap.js";
+import { abrirCaixa, pastasParaLer } from "../_lib/imap.js";
 import { paraEmailCru } from "../_lib/email.js";
 import { ingerir } from "../_lib/ingestao.js";
 import { ativarPendentes, interpretarPendentes } from "../_lib/fila.js";
@@ -13,24 +13,39 @@ import { ativarPendentes, interpretarPendentes } from "../_lib/fila.js";
 const CONTA_ID = 1;
 
 // A function tem 300s de teto. IMAP + parser/IA + gravação de cada lead não
-// cabem, num lote maior, dentro desse tempo. O cron roda a cada 5min — o
-// excedente sobra pra próxima chamada sem se perder, porque ultimo_uid só
-// avança até onde esta execução realmente leu.
+// cabem, num lote maior, dentro desse tempo. O cron roda 1x/dia (teto da
+// Vercel Hobby) — o excedente sobra pra chamada de amanhã sem se perder,
+// porque cada cursor só avança até onde esta execução realmente leu.
+//
+// Este é o orçamento TOTAL da execução, dividido em partes iguais entre as
+// pastas que `pastasParaLer` devolver (ver ali): conta sem Lixeira usa o teto
+// inteiro numa pasta só, exatamente como antes de ler a Lixeira existir; conta
+// com as duas parte 200 em 100+100, pra não dobrar o tempo da execução só
+// porque passou a ler duas pastas em vez de uma.
 const TETO_MENSAGENS = 200;
 
 type ClienteSupabase = ReturnType<typeof getSupabase>;
 
 /**
  * GET /api/cron/varrer: varredura incremental da caixa via IMAP, em três
- * passos. Lê só o que tem UID maior que `portais_contas.ultimo_uid` e grava
- * cada e-mail de portal em portais_eventos_raw (`ingerir`); depois interpreta
- * a FILA de eventos crus (`interpretarPendentes`); depois ativa a FILA de
- * leads pendentes (`ativarPendentes`), que em dry_run só grava a auditoria.
+ * passos. Lê a(s) pasta(s) de `pastasParaLer` (\All sempre, e \Trash quando a
+ * conta tiver — a Lixeira é o que a equipe apaga depois de atender, e sem
+ * lê-la o lead some pra sempre dali) e grava cada e-mail de portal em
+ * portais_eventos_raw (`ingerir`); depois interpreta a FILA de eventos crus
+ * (`interpretarPendentes`); depois ativa a FILA de leads pendentes
+ * (`ativarPendentes`), que em dry_run só grava a auditoria.
+ *
+ * Cada pasta tem o próprio cursor (`ultimo_uid` para \All, `ultimo_uid_lixeira`
+ * para \Trash): UID no IMAP é por pasta, não por conta — o UID 500 de uma não
+ * tem nenhuma relação com o UID 500 da outra. Usar o mesmo cursor pras duas
+ * pularia mensagem em silêncio.
  *
  * Os dois últimos passos varrem fila, não a leva que acabou de chegar: um
  * evento gravado por outra execução (ou pelo backfill do script) volta de
  * `ingerir` como "duplicado" e nunca seria interpretado se o cron olhasse só
- * para os message_id desta rodada.
+ * para os message_id desta rodada. É essa mesma dedupe (UNIQUE conta_id +
+ * message_id) que torna seguro ler a Lixeira: um e-mail que já foi capturado
+ * em \All e depois apagado reaparece aqui, mas nunca vira lead duplicado.
  *
  * Cada mensagem é tratada isoladamente (try/catch por item, dentro do loop):
  * uma mensagem malformada não pode impedir as demais da mesma leva — os
@@ -49,7 +64,7 @@ export async function GET(request: Request): Promise<Response> {
   const sb = getSupabase();
 
   // `ativo` é o botão de pausa da conta: sem este filtro, pausar não pausava
-  // nada e a caixa continuava sendo lida a cada 5 minutos.
+  // nada e a caixa continuava sendo lida a cada execução do cron.
   const { data: conta, error: erroConta } = await sb
     .from("portais_contas")
     .select("*")
@@ -75,48 +90,68 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   const resumo = { lidos: 0, gravado: 0, duplicado: 0, ignorado: 0, semFonte: 0, falha: 0 };
-  let maiorUid = Number(conta.ultimo_uid ?? 0);
+  let maiorUidTodos = Number(conta.ultimo_uid ?? 0);
+  let maiorUidLixeira = Number(conta.ultimo_uid_lixeira ?? 0);
+  // Só grava ultimo_uid_lixeira quando a conta realmente tem Lixeira: sem
+  // isso, uma conta sem \Trash passaria a carregar a coluna com 0 pra sempre,
+  // em vez de continuar sem tocar nela (mesmo comportamento de antes de a
+  // Lixeira existir).
+  let temLixeira = false;
 
   try {
-    const caixa = await caixaDeTodosOsEmails(client);
-    const lock = await client.getMailboxLock(caixa);
+    const pastas = await pastasParaLer(client);
+    const tetoPorPasta = Math.floor(TETO_MENSAGENS / pastas.length);
 
-    try {
-      const desdeUid = maiorUid + 1;
-      for await (const msg of client.fetch({ uid: `${desdeUid}:*` }, { uid: true, source: true })) {
-        if (resumo.lidos >= TETO_MENSAGENS) break;
-        resumo.lidos++;
-        if (msg.uid > maiorUid) maiorUid = msg.uid;
+    for (const p of pastas) {
+      if (p.lixeira) temLixeira = true;
+      const cursorDaPasta = p.lixeira ? maiorUidLixeira : maiorUidTodos;
+      const lock = await client.getMailboxLock(p.pasta);
 
-        // O tipo do imapflow marca `source` como opcional mesmo quando
-        // pedimos source:true na query (mesma nota de scripts/varrer.ts).
-        if (!msg.source) {
-          resumo.semFonte++;
-          console.warn(`uid ${msg.uid}: sem source, mensagem pulada`);
-          continue;
-        }
+      try {
+        const desdeUid = cursorDaPasta + 1;
+        let lidosNaPasta = 0;
 
-        try {
-          const email = paraEmailCru(await simpleParser(msg.source));
-          const resultado = await ingerir(email, CONTA_ID);
-          if (resultado === "gravado") {
-            resumo.gravado++;
-          } else if (resultado === "duplicado") {
-            resumo.duplicado++;
+        for await (const msg of client.fetch({ uid: `${desdeUid}:*` }, { uid: true, source: true })) {
+          if (lidosNaPasta >= tetoPorPasta) break;
+          lidosNaPasta++;
+          resumo.lidos++;
+          if (p.lixeira) {
+            if (msg.uid > maiorUidLixeira) maiorUidLixeira = msg.uid;
           } else {
-            resumo.ignorado++;
+            if (msg.uid > maiorUidTodos) maiorUidTodos = msg.uid;
           }
-        } catch (e) {
-          // Uma mensagem malformada (parse quebrado, upsert falhando) não
-          // pode travar a leitura das seguintes. maiorUid já avançou (linha
-          // acima) — insistir nesta mensagem pra sempre, sem conseguir,
-          // seria pior do que perdê-la uma vez; fica registrada aqui.
-          resumo.falha++;
-          console.error(`uid ${msg.uid}: falhou ao ingerir`, e);
+
+          // O tipo do imapflow marca `source` como opcional mesmo quando
+          // pedimos source:true na query (mesma nota de scripts/varrer.ts).
+          if (!msg.source) {
+            resumo.semFonte++;
+            console.warn(`uid ${msg.uid} (${p.pasta}): sem source, mensagem pulada`);
+            continue;
+          }
+
+          try {
+            const email = paraEmailCru(await simpleParser(msg.source));
+            const resultado = await ingerir(email, CONTA_ID);
+            if (resultado === "gravado") {
+              resumo.gravado++;
+            } else if (resultado === "duplicado") {
+              resumo.duplicado++;
+            } else {
+              resumo.ignorado++;
+            }
+          } catch (e) {
+            // Uma mensagem malformada (parse quebrado, upsert falhando) não
+            // pode travar a leitura das seguintes. O cursor da pasta já
+            // avançou (linhas acima) — insistir nesta mensagem pra sempre,
+            // sem conseguir, seria pior do que perdê-la uma vez; fica
+            // registrada aqui.
+            resumo.falha++;
+            console.error(`uid ${msg.uid} (${p.pasta}): falhou ao ingerir`, e);
+          }
         }
+      } finally {
+        lock.release();
       }
-    } finally {
-      lock.release();
     }
   } catch (e) {
     return await falharVarredura(sb, mensagemDeErro(e));
@@ -130,7 +165,9 @@ export async function GET(request: Request): Promise<Response> {
   // O cursor é gravado ANTES de drenar as filas: a leitura do IMAP já
   // terminou, e uma falha no processamento não pode fazer a próxima execução
   // reler as mesmas mensagens. O que ficou na fila continua lá, esperando.
-  await atualizarConta(sb, { ultimo_uid: maiorUid, ultimo_erro: null });
+  const payloadConta: Record<string, unknown> = { ultimo_uid: maiorUidTodos, ultimo_erro: null };
+  if (temLixeira) payloadConta.ultimo_uid_lixeira = maiorUidLixeira;
+  await atualizarConta(sb, payloadConta);
 
   let interpretados;
   let ativados;
@@ -145,7 +182,8 @@ export async function GET(request: Request): Promise<Response> {
 
   return json({
     conta_id: CONTA_ID,
-    ultimo_uid: maiorUid,
+    ultimo_uid: maiorUidTodos,
+    ...(temLixeira ? { ultimo_uid_lixeira: maiorUidLixeira } : {}),
     ...resumo,
     processado: interpretados.processado,
     ativado: ativados.processado,

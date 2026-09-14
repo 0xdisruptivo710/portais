@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { simpleParser } from "mailparser";
-import { abrirCaixa, caixaDeTodosOsEmails } from "../api/_lib/imap.js";
+import { abrirCaixa, pastasParaLer } from "../api/_lib/imap.js";
 import { paraEmailCru } from "../api/_lib/email.js";
 import { identificarPortal } from "../api/_lib/portal.js";
 import { ingerir } from "../api/_lib/ingestao.js";
@@ -34,52 +34,68 @@ if (!usuario || !senha) {
 
 const client = await abrirCaixa({ usuario, senha });
 
-const caixa = await caixaDeTodosOsEmails(client);
-console.log(`lendo ${caixa} desde ${desde.toISOString().slice(0, 10)}`);
+// A Lixeira entra na mesma varredura de backfill que a \All: e' de la' que
+// vem o lead que a equipe apaga depois de atender (ver imap.ts). Sem
+// pastasParaLer aqui, o script de reprocessamento ficaria capturando um
+// acervo de fixtures e um resumo que nunca incluem a pasta que mais perde
+// lead.
+const pastas = await pastasParaLer(client);
+console.log(
+  `lendo ${pastas.map((p) => p.pasta).join(", ")} desde ${desde.toISOString().slice(0, 10)}`,
+);
 
-const lock = await client.getMailboxLock(caixa);
 try {
-  for await (const msg of client.fetch({ since: desde }, { uid: true, source: true })) {
-    resumo.lidos++;
-
-    // O tipo do imapflow marca `source` como opcional mesmo quando pedimos
-    // source:true na query; sem essa guarda o simpleParser recebe undefined.
-    // Perder um e-mail aqui tem que deixar rastro: sem o contador e o warn,
-    // o lead some da varredura sem nenhuma linha no resumo final.
-    if (!msg.source) {
-      resumo.semFonte++;
-      console.warn(`uid ${msg.uid}: sem source, mensagem pulada`);
-      continue;
-    }
-
+  for (const p of pastas) {
+    const lock = await client.getMailboxLock(p.pasta);
     try {
-      const email = paraEmailCru(await simpleParser(msg.source));
-      const portal = identificarPortal(email.remetente);
+      for await (const msg of client.fetch({ since: desde }, { uid: true, source: true })) {
+        resumo.lidos++;
 
-      const r = await ingerir(email, contaId);
-      resumo[r]++;
-
-      if (portal) {
-        contagem[portal] = (contagem[portal] ?? 0) + 1;
-        if (salvarFixtures && (contagem[portal] ?? 0) <= 10) {
-          const dir = join("api/_lib/parsers/fixtures", portal);
-          mkdirSync(dir, { recursive: true });
-          writeFileSync(join(dir, `${String(contagem[portal]).padStart(2, "0")}.eml`), msg.source);
+        // O tipo do imapflow marca `source` como opcional mesmo quando pedimos
+        // source:true na query; sem essa guarda o simpleParser recebe undefined.
+        // Perder um e-mail aqui tem que deixar rastro: sem o contador e o warn,
+        // o lead some da varredura sem nenhuma linha no resumo final.
+        if (!msg.source) {
+          resumo.semFonte++;
+          console.warn(`uid ${msg.uid} (${p.pasta}): sem source, mensagem pulada`);
+          continue;
         }
-      }
-    } catch (e) {
-      // Mesma disciplina do cron: uma mensagem que estoura no simpleParser
-      // nao pode abortar a varredura. Esta roda uma vez so, sobre 90 dias de
-      // caixa real, e e' ela que produz o acervo de fixtures -- perder tudo
-      // por causa de um e-mail malformado sairia caro.
-      resumo.falha++;
-      console.error(`uid ${msg.uid}: falhou ao ingerir`, e);
-    }
 
-    if (resumo.lidos % 200 === 0) console.log(`  ...${resumo.lidos} lidos`);
+        try {
+          const email = paraEmailCru(await simpleParser(msg.source));
+          const portal = identificarPortal(email.remetente);
+
+          // A dedupe por (conta_id, message_id) dentro de `ingerir` e' o que
+          // torna seguro ler as duas pastas: um e-mail capturado na \All e
+          // depois apagado reaparece aqui, mas `ingerir` devolve "duplicado"
+          // em vez de gravar o lead de novo.
+          const r = await ingerir(email, contaId);
+          resumo[r]++;
+
+          if (portal) {
+            contagem[portal] = (contagem[portal] ?? 0) + 1;
+            if (salvarFixtures && (contagem[portal] ?? 0) <= 10) {
+              const dir = join("api/_lib/parsers/fixtures", portal);
+              mkdirSync(dir, { recursive: true });
+              writeFileSync(join(dir, `${String(contagem[portal]).padStart(2, "0")}.eml`), msg.source);
+            }
+          }
+        } catch (e) {
+          // Mesma disciplina do cron: uma mensagem que estoura no simpleParser
+          // nao pode abortar a varredura. Esta roda uma vez so, sobre 90 dias de
+          // caixa real, e e' ela que produz o acervo de fixtures -- perder tudo
+          // por causa de um e-mail malformado sairia caro.
+          resumo.falha++;
+          console.error(`uid ${msg.uid} (${p.pasta}): falhou ao ingerir`, e);
+        }
+
+        if (resumo.lidos % 200 === 0) console.log(`  ...${resumo.lidos} lidos`);
+      }
+    } finally {
+      lock.release();
+    }
   }
 } finally {
-  lock.release();
   await client.logout();
 }
 

@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../_lib/supabase", () => ({ getSupabase: vi.fn() }));
-vi.mock("../_lib/imap", () => ({ abrirCaixa: vi.fn(), caixaDeTodosOsEmails: vi.fn() }));
+vi.mock("../_lib/imap", () => ({ abrirCaixa: vi.fn(), pastasParaLer: vi.fn() }));
 vi.mock("../_lib/email", () => ({ paraEmailCru: vi.fn() }));
 vi.mock("../_lib/ingestao", () => ({ ingerir: vi.fn() }));
 vi.mock("../_lib/fila", () => ({ interpretarPendentes: vi.fn(), ativarPendentes: vi.fn() }));
 vi.mock("mailparser", () => ({ simpleParser: vi.fn() }));
 
 import { getSupabase } from "../_lib/supabase";
-import { abrirCaixa, caixaDeTodosOsEmails } from "../_lib/imap";
+import { abrirCaixa, pastasParaLer } from "../_lib/imap";
 import { paraEmailCru } from "../_lib/email";
 import { ingerir } from "../_lib/ingestao";
 import { ativarPendentes, interpretarPendentes } from "../_lib/fila";
@@ -25,6 +25,17 @@ function comSegredo(segredo = SEGREDO_CRON): Request {
 
 const CONTA_BASE = { id: 1, cliente_slug: "malentachi", ultimo_uid: 100, ultimo_erro: null, ativo: true };
 
+// Mesmos paths que caixaDeTodosOsEmails/caixaDaLixeira devolveriam numa conta
+// real — o que importa pro teste é só que pastasParaLer(client) devolva um
+// desses dois formatos (só \All, ou \All + \Trash).
+const PASTA_TODOS = "[Gmail]/All Mail";
+const PASTA_LIXEIRA = "[Gmail]/Trash";
+const SO_TODOS = [{ pasta: PASTA_TODOS, lixeira: false }];
+const TODOS_E_LIXEIRA = [
+  { pasta: PASTA_TODOS, lixeira: false },
+  { pasta: PASTA_LIXEIRA, lixeira: true },
+];
+
 interface MensagemFake {
   uid: number;
   source?: Buffer;
@@ -35,7 +46,12 @@ interface MensagemFake {
 interface EstadoTeste {
   conta?: Record<string, unknown> | null;
   erroConta?: { message: string } | null;
+  /** Pastas que pastasParaLer(client) devolve nesta execução. Default: só \All (SO_TODOS). */
+  pastas?: { pasta: string; lixeira: boolean }[];
+  /** Mensagens da pasta \All. */
   mensagens?: MensagemFake[];
+  /** Mensagens da pasta \Trash — só usadas quando `pastas` inclui a Lixeira. */
+  mensagensLixeira?: MensagemFake[];
   /** chave da mensagem -> resultado de ingerir() */
   resultadoIngest?: Record<string, "gravado" | "duplicado" | "ignorado">;
   /** chave da mensagem -> lança erro no ingerir/paraEmailCru (simula lead que estoura) */
@@ -50,21 +66,32 @@ interface EstadoTeste {
 }
 
 function construirClienteImapFake(estado: EstadoTeste) {
-  const lockRelease = vi.fn();
   const logout = vi.fn(async () => {});
-  const getMailboxLock = vi.fn(async () => ({ release: lockRelease }));
-  const fetchChamadas: unknown[] = [];
+  const locksAbertos: string[] = [];
+  let pastaAtual: string | undefined;
 
-  const fetch = vi.fn((...args: unknown[]) => {
-    fetchChamadas.push(args);
+  const getMailboxLock = vi.fn(async (pasta: string) => {
+    pastaAtual = pasta;
+    locksAbertos.push(pasta);
+    return { release: vi.fn() };
+  });
+
+  const fetchChamadas: { pasta: string | undefined; uid: string }[] = [];
+
+  const fetch = vi.fn((query: { uid: string }) => {
+    fetchChamadas.push({ pasta: pastaAtual, uid: query.uid });
     if (estado.erroFetch) throw estado.erroFetch;
-    const mensagens = estado.mensagens ?? [];
+
+    const pastas = estado.pastas ?? SO_TODOS;
+    const descritor = pastas.find((p) => p.pasta === pastaAtual);
+    const mensagens = descritor?.lixeira ? estado.mensagensLixeira ?? [] : estado.mensagens ?? [];
+
     return (async function* () {
       for (const m of mensagens) yield m;
     })();
   });
 
-  return { client: { getMailboxLock, fetch, logout }, lockRelease, logout, fetchChamadas };
+  return { client: { getMailboxLock, fetch, logout }, locksAbertos, logout, fetchChamadas };
 }
 
 function mockarTudo(estado: EstadoTeste = {}) {
@@ -100,13 +127,13 @@ function mockarTudo(estado: EstadoTeste = {}) {
 
   vi.mocked(getSupabase).mockReturnValue({ from } as never);
 
-  const { client, lockRelease, logout, fetchChamadas } = construirClienteImapFake(estado);
+  const { client, logout, fetchChamadas, locksAbertos } = construirClienteImapFake(estado);
   if (estado.erroAbrirCaixa) {
     vi.mocked(abrirCaixa).mockRejectedValue(estado.erroAbrirCaixa);
   } else {
     vi.mocked(abrirCaixa).mockResolvedValue(client as never);
   }
-  vi.mocked(caixaDeTodosOsEmails).mockResolvedValue("[Gmail]/All Mail");
+  vi.mocked(pastasParaLer).mockResolvedValue(estado.pastas ?? SO_TODOS);
 
   // simpleParser e paraEmailCru, em conjunto, transformam `source` (que no
   // teste é só a chave da mensagem, ver MensagemFake) num EmailCru com
@@ -141,7 +168,7 @@ function mockarTudo(estado: EstadoTeste = {}) {
   }
   vi.mocked(ativarPendentes).mockResolvedValue(estado.resumoAtivar ?? { processado: 0, falha: 0 });
 
-  return { chamadasUpdateConta, filtrosConta, lockRelease, logout, fetchChamadas };
+  return { chamadasUpdateConta, filtrosConta, logout, fetchChamadas, locksAbertos };
 }
 
 function mensagem(chave: string, uid: number): MensagemFake {
@@ -151,7 +178,7 @@ function mensagem(chave: string, uid: number): MensagemFake {
 beforeEach(() => {
   vi.mocked(getSupabase).mockReset();
   vi.mocked(abrirCaixa).mockReset();
-  vi.mocked(caixaDeTodosOsEmails).mockReset();
+  vi.mocked(pastasParaLer).mockReset();
   vi.mocked(paraEmailCru).mockReset();
   vi.mocked(ingerir).mockReset();
   vi.mocked(interpretarPendentes).mockReset();
@@ -193,8 +220,7 @@ describe("GET /api/cron/varrer", () => {
 
     // Range pedido ao IMAP tem que comecar depois do cursor salvo (101:*),
     // nao do zero -- e' isso que faz a varredura ser incremental.
-    const [range] = fetchChamadas[0] as [{ uid: string }, unknown];
-    expect(range.uid).toBe("101:*");
+    expect(fetchChamadas[0].uid).toBe("101:*");
 
     expect(chamadasUpdateConta.at(-1)).toEqual({ ultimo_uid: 102, ultimo_erro: null });
   });
@@ -256,7 +282,7 @@ describe("GET /api/cron/varrer", () => {
     expect(chamadasUpdateConta.some((c) => c.ultimo_uid === 1)).toBe(true);
   });
 
-  it("respeita o teto de 200 mensagens por execucao", async () => {
+  it("respeita o teto de 200 mensagens por execucao quando so ha a pasta \\All", async () => {
     const mensagens = Array.from({ length: 250 }, (_, i) => mensagem(`m${i}`, i + 1));
     const { chamadasUpdateConta } = mockarTudo({
       conta: { ...CONTA_BASE, ultimo_uid: 0 },
@@ -266,6 +292,8 @@ describe("GET /api/cron/varrer", () => {
     const r = await handler(comSegredo());
     const corpo = await r.json();
 
+    // Conta sem Lixeira usa o teto inteiro numa pasta só -- nao muda em
+    // relacao ao comportamento de antes desta pasta existir.
     expect(corpo.lidos).toBe(200);
     expect(corpo.ultimo_uid).toBe(200);
     expect(chamadasUpdateConta.at(-1)?.ultimo_uid).toBe(200);
@@ -381,6 +409,139 @@ describe("GET /api/cron/varrer", () => {
     await handler(comSegredo());
 
     expect(logout).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("GET /api/cron/varrer — Lixeira", () => {
+  it("conta com Lixeira le as duas pastas, cada uma com seu proprio cursor", async () => {
+    const { fetchChamadas, chamadasUpdateConta } = mockarTudo({
+      conta: { ...CONTA_BASE, ultimo_uid: 100, ultimo_uid_lixeira: 5 },
+      pastas: TODOS_E_LIXEIRA,
+      mensagens: [mensagem("t1", 101), mensagem("t2", 102)],
+      mensagensLixeira: [mensagem("l1", 6), mensagem("l2", 7), mensagem("l3", 8)],
+    });
+
+    const r = await handler(comSegredo());
+    expect(r.status).toBe(200);
+    const corpo = await r.json();
+
+    expect(corpo.lidos).toBe(5);
+    expect(corpo.gravado).toBe(5);
+    expect(corpo.ultimo_uid).toBe(102);
+    expect(corpo.ultimo_uid_lixeira).toBe(8);
+
+    // Cada pasta pede o range a partir do PRÓPRIO cursor -- UID é por pasta
+    // no Gmail, misturar os dois cursores pularia mensagem em silêncio.
+    const rangeTodos = fetchChamadas.find((c) => c.pasta === PASTA_TODOS);
+    const rangeLixeira = fetchChamadas.find((c) => c.pasta === PASTA_LIXEIRA);
+    expect(rangeTodos?.uid).toBe("101:*");
+    expect(rangeLixeira?.uid).toBe("6:*");
+
+    expect(chamadasUpdateConta.at(-1)).toEqual({
+      ultimo_uid: 102,
+      ultimo_uid_lixeira: 8,
+      ultimo_erro: null,
+    });
+  });
+
+  it("conta sem Lixeira le so a \\All e nao grava ultimo_uid_lixeira", async () => {
+    const { chamadasUpdateConta, fetchChamadas } = mockarTudo({
+      conta: { ...CONTA_BASE, ultimo_uid: 100 },
+      pastas: SO_TODOS,
+      mensagens: [mensagem("t1", 101)],
+    });
+
+    const r = await handler(comSegredo());
+    expect(r.status).toBe(200);
+    const corpo = await r.json();
+
+    expect(corpo.ultimo_uid).toBe(101);
+    expect("ultimo_uid_lixeira" in corpo).toBe(false);
+    expect(fetchChamadas).toHaveLength(1);
+    // Payload de update não pode carregar uma coluna que essa conta nunca usou.
+    expect(chamadasUpdateConta.at(-1)).toEqual({ ultimo_uid: 101, ultimo_erro: null });
+  });
+
+  it("cursor de uma pasta nao interfere no da outra quando so uma tem mensagem nova", async () => {
+    const { chamadasUpdateConta } = mockarTudo({
+      conta: { ...CONTA_BASE, ultimo_uid: 100, ultimo_uid_lixeira: 5 },
+      pastas: TODOS_E_LIXEIRA,
+      mensagens: [],
+      mensagensLixeira: [mensagem("l1", 6)],
+    });
+
+    const r = await handler(comSegredo());
+    const corpo = await r.json();
+
+    // \All não recebeu nada nesta rodada: o cursor dela tem que ficar
+    // exatamente onde estava, mesmo com a Lixeira avançando.
+    expect(corpo.ultimo_uid).toBe(100);
+    expect(corpo.ultimo_uid_lixeira).toBe(6);
+    expect(chamadasUpdateConta.at(-1)).toEqual({
+      ultimo_uid: 100,
+      ultimo_uid_lixeira: 6,
+      ultimo_erro: null,
+    });
+  });
+
+  it("e-mail ja capturado e depois apagado aparece na Lixeira mas nao duplica o lead", async () => {
+    // Cenario do vazamento: o e-mail já tinha sido gravado quando ainda
+    // estava em \All (message_id já existe em portais_eventos_raw). Ao
+    // reaparecer na Lixeira, o UNIQUE (conta_id, message_id) do `ingerir`
+    // devolve "duplicado" -- aqui simulado pelo próprio mock de ingerir,
+    // já que a dedupe de verdade é coberta em ingestao.test.ts.
+    const { chamadasUpdateConta } = mockarTudo({
+      conta: { ...CONTA_BASE, ultimo_uid: 100, ultimo_uid_lixeira: 5 },
+      pastas: TODOS_E_LIXEIRA,
+      mensagens: [],
+      mensagensLixeira: [mensagem("ja-capturado", 6)],
+      resultadoIngest: { "ja-capturado": "duplicado" },
+    });
+
+    const r = await handler(comSegredo());
+    const corpo = await r.json();
+
+    expect(corpo.duplicado).toBe(1);
+    expect(corpo.gravado).toBe(0);
+    // O cursor da Lixeira avança mesmo assim -- duplicado não é falha, e a
+    // mensagem não pode ser relida pra sempre só porque já existia.
+    expect(corpo.ultimo_uid_lixeira).toBe(6);
+    expect(chamadasUpdateConta.at(-1)).toEqual({
+      ultimo_uid: 100,
+      ultimo_uid_lixeira: 6,
+      ultimo_erro: null,
+    });
+  });
+
+  it("com Lixeira, o teto de 200 mensagens e dividido em 100 por pasta", async () => {
+    const mensagensTodos = Array.from({ length: 150 }, (_, i) => mensagem(`t${i}`, i + 1));
+    const mensagensLixeira = Array.from({ length: 150 }, (_, i) => mensagem(`l${i}`, i + 1));
+    mockarTudo({
+      conta: { ...CONTA_BASE, ultimo_uid: 0, ultimo_uid_lixeira: 0 },
+      pastas: TODOS_E_LIXEIRA,
+      mensagens: mensagensTodos,
+      mensagensLixeira,
+    });
+
+    const r = await handler(comSegredo());
+    const corpo = await r.json();
+
+    expect(corpo.lidos).toBe(200);
+    expect(corpo.ultimo_uid).toBe(100);
+    expect(corpo.ultimo_uid_lixeira).toBe(100);
+  });
+
+  it("abre e fecha o lock de cada pasta lida", async () => {
+    const { locksAbertos } = mockarTudo({
+      conta: { ...CONTA_BASE, ultimo_uid: 100, ultimo_uid_lixeira: 5 },
+      pastas: TODOS_E_LIXEIRA,
+      mensagens: [],
+      mensagensLixeira: [],
+    });
+
+    await handler(comSegredo());
+
+    expect(locksAbertos).toEqual([PASTA_TODOS, PASTA_LIXEIRA]);
   });
 });
 
