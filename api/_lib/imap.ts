@@ -29,3 +29,39 @@ export async function caixaDeTodosOsEmails(client: ImapFlow): Promise<string> {
   }
   return "INBOX";
 }
+
+/**
+ * A Lixeira do Gmail também muda de nome com o idioma da conta ("[Gmail]/
+ * Lixeira", "[Gmail]/Trash") — mesmo motivo de caixaDeTodosOsEmails, e mesmo
+ * jeito de resolver: pelo atributo especial \Trash, nunca pelo nome.
+ *
+ * Diferente de \All, aqui não existe fallback: nem toda conta tem Lixeira (ou
+ * pode ter sido esvaziada/desativada), e cair em outra pasta "pra não
+ * quebrar" leria e-mails errados. Devolve null e quem chama segue só com a
+ * \All.
+ */
+export async function caixaDaLixeira(client: ImapFlow): Promise<string | null> {
+  for (const caixa of await client.list()) {
+    if (caixa.specialUse === "\\Trash") return caixa.path;
+  }
+  return null;
+}
+
+export interface PastaParaLer {
+  pasta: string;
+  /** true quando é a Lixeira — quem chama usa isso pra saber qual cursor (ultimo_uid x ultimo_uid_lixeira) pertence a esta pasta. */
+  lixeira: boolean;
+}
+
+/**
+ * As pastas que uma varredura precisa cobrir: \All sempre, e \Trash quando
+ * a conta tiver. Centralizado aqui porque o cron (api/cron/varrer.ts) e o
+ * script de backfill (scripts/varrer.ts) têm que decidir isso do mesmo jeito
+ * — o vazamento que motivou esta função foi um dos dois ler só a \All.
+ */
+export async function pastasParaLer(client: ImapFlow): Promise<PastaParaLer[]> {
+  const pastas: PastaParaLer[] = [{ pasta: await caixaDeTodosOsEmails(client), lixeira: false }];
+  const lixeira = await caixaDaLixeira(client);
+  if (lixeira) pastas.push({ pasta: lixeira, lixeira: true });
+  return pastas;
+}
