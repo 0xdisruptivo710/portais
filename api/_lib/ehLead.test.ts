@@ -14,6 +14,57 @@ const CASOS: { portal: Portal; lead: string; ruido: string }[] = [
   { portal: "chavesnamao", lead: "[LEAD] Ford Ka 2019", ruido: "Comunicado importante para anunciantes" },
   { portal: "mercadolivre", lead: "Você tem uma pessoa interessada no seu anúncio", ruido: "Seu código de verificação chegou" },
   { portal: "comprecar", lead: "Contato de Interesse - Chevrolet Celta", ruido: "Veículo Reprovado | Comprecar" },
+  // O aviso de chat da OLX vem do domínio de marketing dela (dicas@newsolx.com.br),
+  // que no mesmo e-mail já empurra vitrine de categoria, "baixe o app" e
+  // "anuncie grátis". Aqui o padrão é apertado de propósito: o que passa é a
+  // frase do aviso, e só ela.
+  {
+    portal: "olxchat",
+    lead: "Tem mensagem te esperando no chat!",
+    ruido: "Faça uma grana extra com o que está parado na sua casa",
+  },
+];
+
+/**
+ * CARRO SP e Usadosbr entraram no catálogo com UM e-mail de lead cada e
+ * NENHUM e-mail de ruído observado (a caixa da cliente guarda só os últimos
+ * dias). O padrão de cada um por isso é deliberadamente frouxo na segunda
+ * metade: prende o carimbo do portal no começo do assunto, que é estável, e
+ * aceita qualquer das palavras com que portal avisa contato novo. Prefere-se
+ * deixar passar um comunicado (que vira card estranho e visível) a barrar em
+ * silêncio um segundo tipo de lead que a amostra não mostrou.
+ */
+const CASOS_AMOSTRA_PEQUENA: { portal: Portal; leads: string[]; ruidos: string[] }[] = [
+  {
+    portal: "carrosp",
+    leads: [
+      // O único e-mail real observado.
+      "CARRO SP - Contato do whatsapp enviado pelo site",
+      // O corpo desse mesmo e-mail tem campo "PROPOSTA" e campo "LEAD", ou
+      // seja, o portal manda mais de um tipo de contato pelo mesmo template.
+      "CARRO SP - Proposta enviada pelo site",
+      "CARRO SP - Novo interesse no seu anúncio",
+    ],
+    ruidos: [
+      "CARRO SP - Sua fatura está disponível",
+      "CARRO SP - Renove seu plano de anúncios",
+      "Boleto CARRO SP vence amanhã",
+    ],
+  },
+  {
+    portal: "usadosbr",
+    leads: [
+      // O único e-mail real observado.
+      "Usadosbr :: Proposta Recebida",
+      "Usadosbr :: Contato Recebido",
+      "Usadosbr :: Nova mensagem",
+    ],
+    ruidos: [
+      "Usadosbr :: Seu anúncio foi aprovado",
+      "Usadosbr :: Fatura disponível",
+      "Novidades do Usadosbr para a sua loja",
+    ],
+  },
 ];
 
 describe("ehLead", () => {
@@ -38,6 +89,19 @@ describe("ehLead", () => {
   ])("webmotors: ruído genérico '%s' é barrado", (assunto) => {
     expect(ehLead("webmotors", assunto)).toBe(false);
   });
+
+  for (const { portal, leads, ruidos } of CASOS_AMOSTRA_PEQUENA) {
+    for (const assunto of leads) {
+      it(`${portal}: "${assunto}" passa`, () => {
+        expect(ehLead(portal, assunto)).toBe(true);
+      });
+    }
+    for (const assunto of ruidos) {
+      it(`${portal}: "${assunto}" é barrado`, () => {
+        expect(ehLead(portal, assunto)).toBe(false);
+      });
+    }
+  }
 
   it("portal sem padrão catalogado (icarros) é fail-open: deixa passar", () => {
     expect(ehLead("icarros", "qualquer coisa, nunca varremos icarros ainda")).toBe(true);

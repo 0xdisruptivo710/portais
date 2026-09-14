@@ -14,6 +14,9 @@ export const ROTULOS: Record<Portal, string> = {
   comprecar: "Comprecar",
   olx: "OLX",
   mercadolivre: "Mercado Livre",
+  carrosp: "Carro SP",
+  usadosbr: "Usadosbr",
+  olxchat: "OLX Chat",
 };
 
 export function rotuloPortal(portal: string): string {

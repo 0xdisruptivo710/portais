@@ -11,6 +11,14 @@ const DOMINIOS: Record<Portal, string[]> = {
   comprecar: ["comprecar.com.br"],
   olx: ["olx.com.br", "olxbr.com"],
   mercadolivre: ["mercadolivre.com.br", "mercadolivre.com", "mercadolibre.com"],
+  // O CARRO SP manda do domínio curto e anuncia no longo: o e-mail de lead
+  // chega de noreply@carsp.com.br e aponta para carrosp.com.br.
+  carrosp: ["carsp.com.br", "carrosp.com.br"],
+  usadosbr: ["usadosbr.com"],
+  // Domínio de marketing da OLX, separado de olx.com.br. Era a regra de
+  // domínio completo acima que o deixava de fora, e ela continua certa: o que
+  // faltava não era afrouxar o casamento, era catalogar o domínio.
+  olxchat: ["newsolx.com.br"],
 };
 
 export function identificarPortal(remetente: string): Portal | null {

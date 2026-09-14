@@ -296,15 +296,20 @@ function motivoDoBloqueio(lead: LeadDoLote, a: ArgsResumo): string | null {
  * Mesmos rótulos de ativacao.ts. Duplicado aqui pela mesma razão de sempre
  * nesta casa: o texto da prévia precisa ser idêntico ao que sai, e importar o
  * mapa de lá amarraria dois módulos que não se conhecem. src/lib/portais.test.ts
- * é quem impede a duplicação de divergir.
+ * é quem impede a duplicação de divergir, e por isso o mapa é exportado: era
+ * a única das três cópias que nenhum teste olhava, e três portais novos
+ * entraram de uma vez.
  */
-const ROTULOS: Record<string, string> = {
+export const ROTULOS: Record<string, string> = {
   webmotors: "Webmotors",
   icarros: "iCarros",
   chavesnamao: "Chaves na Mão",
   comprecar: "Comprecar",
   olx: "OLX",
   mercadolivre: "Mercado Livre",
+  carrosp: "Carro SP",
+  usadosbr: "Usadosbr",
+  olxchat: "OLX Chat",
 };
 
 function primeiroNome(nome: string | null): string | null {
