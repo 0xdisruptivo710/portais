@@ -44,6 +44,35 @@ export const STATUS_ATIVACAO_OPCOES = [
 ] as const;
 
 /**
+ * Os estados da coluna Atendimento, com o rótulo que o vendedor lê.
+ *
+ * Vocabulário do servidor (EstadoAtendimento em api/_lib/atendimento.ts),
+ * traduzido aqui. Não é booleano de propósito: três coisas diferentes se
+ * escondiam atrás de "não está em atendimento", e só uma delas é fila limpa.
+ *
+ * "sem_telefone" fica fora do FILTRO (o endpoint não o aceita) mas existe no
+ * mapa: a linha precisa dizer que ali não há o que conferir, em vez de fingir
+ * que conferiu.
+ */
+export const ATENDIMENTO_OPCOES = [
+  { valor: "em_atendimento", rotulo: "Em atendimento" },
+  { valor: "sem_conversa", rotulo: "Ainda sem conversa" },
+  { valor: "nao_conferido", rotulo: "Nao conferido" },
+] as const;
+
+const ROTULOS_ATENDIMENTO: Record<string, string> = {
+  em_atendimento: "Em atendimento",
+  sem_conversa: "Ainda sem conversa",
+  nao_conferido: "Nao conferido",
+  sem_telefone: "Sem telefone",
+};
+
+export function rotuloAtendimento(estado: string | null | undefined): string {
+  if (!estado) return "Conferindo";
+  return ROTULOS_ATENDIMENTO[estado] ?? estado;
+}
+
+/**
  * Rótulo de exibição do status de ativação, o mesmo do filtro. A lista
  * mostra o rótulo, não o valor cru gravado no banco: "dry_run" é vocabulário
  * de contrato de API, não de quem opera a tela.

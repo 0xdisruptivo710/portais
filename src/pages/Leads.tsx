@@ -9,15 +9,20 @@ import {
   Clock,
   FileQuestion,
   FlaskConical,
+  HelpCircle,
   Loader2,
+  MessageSquare,
+  MessageSquareOff,
   SearchX,
 } from "lucide-react";
 import BotaoEnviar from "../components/BotaoEnviar";
 import EnvioEmLote from "../components/EnvioEmLote";
 import PainelRevisao, { type EventoRevisao } from "../components/PainelRevisao";
-import { buscarJson } from "../lib/api";
+import { buscarJson, chamarApi } from "../lib/api";
 import {
+  ATENDIMENTO_OPCOES,
   PORTAIS,
+  rotuloAtendimento,
   rotuloPortal,
   rotuloStatus,
   STATUS_ATIVACAO_OPCOES,
@@ -42,6 +47,21 @@ interface VendedorItem {
   nome: string;
   ordem: number;
 }
+
+/** O que /api/conversas responde por lead. Ver api/_lib/atendimento.ts. */
+interface ItemAtendimento {
+  lead_id: number;
+  estado: string;
+  ultima_mensagem_em: string | null;
+  conferido_em: string | null;
+  detalhe: string | null;
+}
+
+/**
+ * Teto de ids por chamada a /api/conversas, igual ao do servidor. A tela
+ * pergunta pelo que esta' mostrando, nunca pela base.
+ */
+const TETO_CONVERSAS = 50;
 
 /**
  * A linha da lista, venha ela de um lead ou de um evento que ainda espera
@@ -87,6 +107,13 @@ export default function Leads() {
   const [portalFiltro, setPortalFiltro] = useState("");
   const [vendedorFiltro, setVendedorFiltro] = useState("");
   const [statusFiltro, setStatusFiltro] = useState("");
+  // Vazio de proposito: a lista NAO esconde por padrao quem ja esta em
+  // atendimento. O estado e' um retrato com validade curta (ver
+  // api/_lib/atendimento.ts), e esconder linha por causa de um retrato e' a
+  // forma mais silenciosa de perder lead. O que a tela faz e' mostrar, contar
+  // quantos sao e deixar o filtro a um clique.
+  const [atendimentoFiltro, setAtendimentoFiltro] = useState("");
+  const [atendimento, setAtendimento] = useState<Record<number, ItemAtendimento>>({});
   const [inicioFiltro, setInicioFiltro] = useState("");
   const [fimFiltro, setFimFiltro] = useState("");
   const [vendedores, setVendedores] = useState<VendedorItem[]>([]);
@@ -127,7 +154,7 @@ export default function Leads() {
   useEffect(() => {
     let ativo = true;
     setCarregando(true);
-    buscarJson<{ itens: LeadItem[] }>(urlDosLeads(portalFiltro, vendedorFiltro))
+    buscarJson<{ itens: LeadItem[] }>(urlDosLeads(portalFiltro, vendedorFiltro, atendimentoFiltro))
       .then((resposta) => {
         if (ativo) setItens(resposta.itens);
       })
@@ -140,7 +167,47 @@ export default function Leads() {
     return () => {
       ativo = false;
     };
-  }, [portalFiltro, vendedorFiltro, geracao]);
+  }, [portalFiltro, vendedorFiltro, atendimentoFiltro, geracao]);
+
+  /**
+   * Quem ja esta em atendimento, para os leads que estao NA TELA.
+   *
+   * Consultar o WTS linha a linha ao abrir a lista custaria duas chamadas por
+   * lead contra uma cota de cerca de 500 a cada 5 minutos, disputada com o
+   * envio. Por isso a pergunta e' uma so', em lote, e o servidor responde do
+   * cache o que conferiu ha pouco (ver api/_lib/atendimento.ts).
+   *
+   * Falhar aqui e' silencioso de proposito, como o seletor de vendedores e a
+   * fila de revisao: a coluna de atendimento e' informacao a mais, e nao pode
+   * levar embora a fila de trabalho do vendedor.
+   */
+  useEffect(() => {
+    const ids = itens.slice(0, TETO_CONVERSAS).map((item) => item.id);
+    if (ids.length === 0) return;
+
+    let ativo = true;
+    chamarApi("/api/conversas", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ leadIds: ids }),
+    })
+      .then(async (resposta) => {
+        if (!resposta.ok) return;
+        const corpo = (await resposta.json()) as { itens?: ItemAtendimento[] };
+        if (!ativo || !Array.isArray(corpo.itens)) return;
+        setAtendimento((atuais) => {
+          const proximo = { ...atuais };
+          for (const item of corpo.itens as ItemAtendimento[]) {
+            if (typeof item?.lead_id === "number") proximo[item.lead_id] = item;
+          }
+          return proximo;
+        });
+      })
+      .catch(() => {});
+    return () => {
+      ativo = false;
+    };
+  }, [itens]);
 
   const linhas = useMemo(() => {
     const deLeads: Linha[] = itens.map((item) => ({
@@ -197,7 +264,22 @@ export default function Leads() {
     });
   }, [linhas, statusFiltro, inicioFiltro, fimFiltro]);
 
-  const temFiltro = Boolean(portalFiltro || vendedorFiltro || statusFiltro || inicioFiltro || fimFiltro);
+  const temFiltro = Boolean(
+    portalFiltro || vendedorFiltro || statusFiltro || atendimentoFiltro || inicioFiltro || fimFiltro,
+  );
+
+  /**
+   * Quantos dos leads que estao na tela ja tem conversa em andamento. E' o
+   * numero que o vendedor precisa ver antes de comecar a trabalhar a fila: se
+   * a maior parte dela ja esta com a equipe, o trabalho util e' o resto.
+   */
+  const emAtendimento = useMemo(
+    () =>
+      linhasFiltradas.filter(
+        (linha) => linha.tipo === "lead" && atendimento[linha.id]?.estado === "em_atendimento",
+      ).length,
+    [linhasFiltradas, atendimento],
+  );
 
   /**
    * Quem pode entrar num lote: lead de verdade e com telefone. Item de revisão
@@ -220,7 +302,7 @@ export default function Leads() {
    */
   useEffect(() => {
     setSelecionados([]);
-  }, [portalFiltro, vendedorFiltro, statusFiltro, inicioFiltro, fimFiltro]);
+  }, [portalFiltro, vendedorFiltro, statusFiltro, atendimentoFiltro, inicioFiltro, fimFiltro]);
 
   const marcados = new Set(selecionados);
   const todosMarcados = selecionaveis.length > 0 && selecionaveis.every((id) => marcados.has(id));
@@ -271,6 +353,7 @@ export default function Leads() {
     setPortalFiltro("");
     setVendedorFiltro("");
     setStatusFiltro("");
+    setAtendimentoFiltro("");
     setInicioFiltro("");
     setFimFiltro("");
   }
@@ -302,7 +385,7 @@ export default function Leads() {
         </div>
 
         <div
-          className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5"
+          className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6"
           role="group"
           aria-label="filtros de leads"
         >
@@ -345,6 +428,24 @@ export default function Leads() {
             <select id="leads-status" value={statusFiltro} onChange={(e) => setStatusFiltro(e.target.value)}>
               <option value="">Todos</option>
               {STATUS_ATIVACAO_OPCOES.map((opcao) => (
+                <option key={opcao.valor} value={opcao.valor}>
+                  {opcao.rotulo}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="campo">
+            <label className="rotulo" htmlFor="leads-atendimento">
+              Atendimento
+            </label>
+            <select
+              id="leads-atendimento"
+              value={atendimentoFiltro}
+              onChange={(e) => setAtendimentoFiltro(e.target.value)}
+            >
+              <option value="">Todos</option>
+              {ATENDIMENTO_OPCOES.map((opcao) => (
                 <option key={opcao.valor} value={opcao.valor}>
                   {opcao.rotulo}
                 </option>
@@ -396,6 +497,28 @@ export default function Leads() {
         </div>
       )}
 
+      {/* O numero que responde a reclamacao do vendedor ("os meus so vieram
+          leads que ja estava em contato"): quantos da fila que ele esta vendo
+          ja estao sendo atendidos. A lista nao esconde ninguem por conta
+          propria, mas deixa o recorte util a um clique. */}
+      {emAtendimento > 0 && atendimentoFiltro !== "sem_conversa" && (
+        <div className="faixa-info items-center justify-between gap-3">
+          <span className="flex items-start gap-2">
+            <MessageSquare aria-hidden="true" className="mt-px h-4 w-4 shrink-0" />
+            {emAtendimento === 1
+              ? "1 lead desta lista já tem conversa em andamento no WhatsApp da loja."
+              : `${emAtendimento} leads desta lista já têm conversa em andamento no WhatsApp da loja.`}
+          </span>
+          <button
+            type="button"
+            className="botao shrink-0"
+            onClick={() => setAtendimentoFiltro("sem_conversa")}
+          >
+            Ver só os que estão ainda sem conversa
+          </button>
+        </div>
+      )}
+
       {/* A barra do lote só existe quando há seleção: ela é a antessala do
           caminho mais perigoso do painel, e não tem por que ficar de pé
           enquanto o operador só está lendo a lista. */}
@@ -406,6 +529,7 @@ export default function Leads() {
             portal: portalFiltro,
             vendedor: vendedorFiltro,
             status: statusFiltro,
+            atendimento: atendimentoFiltro,
             inicio: inicioFiltro,
             fim: fimFiltro,
           })}
@@ -436,7 +560,7 @@ export default function Leads() {
         </div>
       ) : (
         <div className="tabela-rolagem tabela-rolagem-longa">
-          <table className="tabela min-w-[960px]">
+          <table className="tabela min-w-[1080px]">
             <thead>
               <tr>
                 <th scope="col" className="w-9">
@@ -453,6 +577,9 @@ export default function Leads() {
                 <th scope="col">Telefone</th>
                 <th scope="col">Veículo</th>
                 <th scope="col">Vendedor</th>
+                {/* Sem esta coluna o vendedor abria a fila inteira sem saber
+                    que a equipe ja estava falando com a maior parte dela. */}
+                <th scope="col">Atendimento</th>
                 <th scope="col">Status</th>
                 <th scope="col">Envio</th>
               </tr>
@@ -491,6 +618,13 @@ export default function Leads() {
                       {linha.vendedor ?? <Ausente texto="sem vendedor" />}
                     </td>
                     <td>
+                      {linha.tipo === "lead" ? (
+                        <SeloAtendimento item={atendimento[linha.id]} />
+                      ) : (
+                        <Ausente texto="sem lead ainda" />
+                      )}
+                    </td>
+                    <td>
                       <SeloStatus status={linha.status} />
                     </td>
                     <td>
@@ -526,7 +660,7 @@ export default function Leads() {
                       exigiria foco próprio e devolveria o operador ao topo. */}
                   {linha.tipo === "revisao" && expandido === linha.id && linha.evento && (
                     <tr>
-                      <td colSpan={8} className="bg-aios-fundo/60 p-3">
+                      <td colSpan={9} className="bg-aios-fundo/60 p-3">
                         <PainelRevisao
                           evento={linha.evento}
                           aoCompletar={() => aoCompletarRevisao(linha.id)}
@@ -549,10 +683,11 @@ export default function Leads() {
  * vendedor tem acento e espaço, e "Ana Paula" precisa chegar codificado. Sem
  * filtro nenhum a URL fica sem "?", que é o mesmo endereço de antes.
  */
-function urlDosLeads(portal: string, vendedor: string): string {
+function urlDosLeads(portal: string, vendedor: string, atendimento: string): string {
   const parametros = new URLSearchParams();
   if (portal) parametros.set("portal", portal);
   if (vendedor) parametros.set("vendedor", vendedor);
+  if (atendimento) parametros.set("atendimento", atendimento);
   const query = parametros.toString();
   return query ? `/api/leads?${query}` : "/api/leads";
 }
@@ -566,6 +701,7 @@ function descreverFiltro(f: {
   portal: string;
   vendedor: string;
   status: string;
+  atendimento: string;
   inicio: string;
   fim: string;
 }): string {
@@ -573,6 +709,7 @@ function descreverFiltro(f: {
   if (f.portal) partes.push(`Portal ${rotuloPortal(f.portal)}`);
   if (f.vendedor) partes.push(`Vendedor ${f.vendedor}`);
   if (f.status) partes.push(`Status ${rotuloStatus(f.status)}`);
+  if (f.atendimento) partes.push(`Atendimento ${rotuloAtendimento(f.atendimento)}`);
   if (f.inicio || f.fim) partes.push(`Período de ${f.inicio || "sempre"} até ${f.fim || "hoje"}`);
   return partes.length > 0 ? partes.join(", ") : "todos os leads da lista";
 }
@@ -610,4 +747,55 @@ function aparenciaDoStatus(status: string | null) {
     default:
       return { classe: "selo-neutro", Icone: Clock };
   }
+}
+
+/**
+ * O estado de atendimento daquele lead.
+ *
+ * Quatro estados, e nao um booleano: tres coisas diferentes se escondiam
+ * atras de "nao esta em atendimento" (ninguem conferiu ainda, nao ha telefone
+ * para conferir, conferimos e nao ha conversa), e so a ultima e fila limpa.
+ * Enquanto a resposta nao chega, a celula diz "conferindo" em vez de afirmar
+ * o que ainda nao sabe.
+ *
+ * O detalhe da falha e a data da ultima mensagem vao no `title`: quem precisa
+ * decidir por cima disso consegue ver, sem alargar a linha da lista.
+ */
+function SeloAtendimento({ item }: { item: ItemAtendimento | undefined }) {
+  if (!item) {
+    return <span className="text-aios-texto-suave">Conferindo</span>;
+  }
+  if (item.estado === "sem_telefone") {
+    return <Ausente texto="sem telefone" />;
+  }
+
+  const { classe, Icone } = aparenciaDoAtendimento(item.estado);
+  return (
+    <span className={`selo ${classe}`} title={detalheDoAtendimento(item)}>
+      <Icone aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+      {rotuloAtendimento(item.estado)}
+    </span>
+  );
+}
+
+function aparenciaDoAtendimento(estado: string) {
+  switch (estado) {
+    case "em_atendimento":
+      return { classe: "selo-atencao", Icone: MessageSquare };
+    case "sem_conversa":
+      return { classe: "selo-neutro", Icone: MessageSquareOff };
+    default:
+      return { classe: "selo-neutro", Icone: HelpCircle };
+  }
+}
+
+function detalheDoAtendimento(item: ItemAtendimento): string | undefined {
+  if (item.detalhe) return item.detalhe;
+  if (item.estado === "em_atendimento" && item.ultima_mensagem_em) {
+    return `Última mensagem em ${new Date(item.ultima_mensagem_em).toLocaleString("pt-BR")}`;
+  }
+  if (item.conferido_em) {
+    return `Conferido em ${new Date(item.conferido_em).toLocaleString("pt-BR")}`;
+  }
+  return undefined;
 }

@@ -277,6 +277,12 @@ function mockarApiCompleta(leads: unknown[], revisao: unknown[]) {
       }
       return { ok: true, status: 200, json: async () => ({ itens: fila }) };
     }
+    // A tela confere o atendimento dos leads visiveis assim que a lista
+    // chega. Quem nao esta' testando isso recebe resposta vazia, e nenhuma
+    // linha ganha selo de atendimento.
+    if (url.startsWith("/api/conversas")) {
+      return { ok: true, status: 200, json: async () => ({ itens: [], consultados: 0 }) };
+    }
     return { ok: true, status: 200, json: async () => ({ itens: leads }) };
   });
   vi.stubGlobal("fetch", f);
@@ -557,5 +563,130 @@ describe("tela de leads: selecao para o envio em lote", () => {
     await screen.findByText(/lote conclu[íi]do/i);
     expect(await within(screen.getByRole("table")).findByText("Enviado")).toBeInTheDocument();
     expect(f.mock.calls.filter((c) => String(c[0]).startsWith("/api/leads"))).toHaveLength(1);
+  });
+});
+
+/**
+ * A segunda metade da reclamacao do vendedor: "os meus so vieram leads que ja
+ * comprou ou que ja estava em contato". A medicao confirmou: dos 40 leads mais
+ * recentes com telefone, 30 ja tinham conversa no WTS nos ultimos 7 dias.
+ *
+ * A tela nao esconde esses leads por padrao. O estado e' um retrato com
+ * validade curta, e esconder linha por causa de um retrato e' a forma mais
+ * silenciosa de perder lead, que e' o pecado capital deste sistema. O que ela
+ * faz e' MOSTRAR, contar quantos sao e deixar o filtro a um clique.
+ */
+function mockarComAtendimento(leads: unknown[], itens: unknown[]) {
+  const f = vi.fn(async (url: string, _init?: RequestInit) => {
+    if (url.startsWith("/api/vendedores")) return { ok: true, status: 200, json: async () => ({ itens: VENDEDORES }) };
+    if (url.startsWith("/api/revisao")) return { ok: true, status: 200, json: async () => ({ itens: [] }) };
+    if (url.startsWith("/api/conversas")) {
+      return { ok: true, status: 200, json: async () => ({ itens, consultados: itens.length }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ itens: leads }) };
+  });
+  vi.stubGlobal("fetch", f);
+  return f;
+}
+
+const EM_ATENDIMENTO = {
+  lead_id: 1,
+  estado: "em_atendimento",
+  ultima_mensagem_em: "2026-09-14T13:00:00.000Z",
+  conferido_em: "2026-09-14T15:00:00.000Z",
+  detalhe: null,
+};
+
+describe("coluna de atendimento", () => {
+  it("mostra na linha que o lead ja esta em atendimento", async () => {
+    mockarComAtendimento([LEAD_COM_TELEFONE], [EM_ATENDIMENTO]);
+    render(<Leads />);
+    await screen.findByText("Fulano");
+
+    expect(await within(screen.getByRole("table")).findByText(/em atendimento/i)).toBeInTheDocument();
+  });
+
+  it("pergunta pelos leads que estao na tela, nao pela base inteira", async () => {
+    const f = mockarComAtendimento([LEAD_COM_TELEFONE], [EM_ATENDIMENTO]);
+    render(<Leads />);
+    await screen.findByText("Fulano");
+
+    await waitFor(() => {
+      const chamada = f.mock.calls.find((c) => String(c[0]).startsWith("/api/conversas"));
+      expect(chamada).toBeDefined();
+      const corpo = JSON.parse(String((chamada![1] as RequestInit).body)) as { leadIds: number[] };
+      expect(corpo.leadIds).toEqual([1]);
+    });
+  });
+
+  // A lista e' a fila de trabalho do vendedor. Uma falha na coluna de
+  // atendimento, que e' informacao a mais, nao pode levar a fila embora.
+  it("falha ao conferir atendimento nao derruba a lista", async () => {
+    const f = vi.fn(async (url: string) => {
+      if (url.startsWith("/api/vendedores")) return { ok: true, status: 200, json: async () => ({ itens: VENDEDORES }) };
+      if (url.startsWith("/api/revisao")) return { ok: true, status: 200, json: async () => ({ itens: [] }) };
+      if (url.startsWith("/api/conversas")) throw new Error("rede caiu");
+      return { ok: true, status: 200, json: async () => ({ itens: [LEAD_COM_TELEFONE] }) };
+    });
+    vi.stubGlobal("fetch", f);
+
+    render(<Leads />);
+
+    expect(await screen.findByText("Fulano")).toBeInTheDocument();
+  });
+
+  it("nao gasta chamada quando nao ha lead nenhum na lista", async () => {
+    const f = mockarComAtendimento([], []);
+    render(<Leads />);
+    await screen.findByText(/nenhum lead/i);
+
+    expect(f.mock.calls.filter((c) => String(c[0]).startsWith("/api/conversas"))).toHaveLength(0);
+  });
+
+  it("por padrao a lista mostra quem esta em atendimento, nao esconde", async () => {
+    mockarComAtendimento([LEAD_COM_TELEFONE], [EM_ATENDIMENTO]);
+    render(<Leads />);
+
+    expect(await screen.findByText("Fulano")).toBeInTheDocument();
+  });
+
+  it("conta quantos ja estao em atendimento e oferece o filtro num clique", async () => {
+    const f = mockarComAtendimento([LEAD_COM_TELEFONE], [EM_ATENDIMENTO]);
+    render(<Leads />);
+    await screen.findByText("Fulano");
+
+    const atalho = await screen.findByRole("button", { name: /ainda sem conversa/i });
+    f.mockClear();
+    await userEvent.click(atalho);
+
+    await waitFor(() => {
+      expect(f).toHaveBeenCalledWith("/api/leads?atendimento=sem_conversa");
+    });
+  });
+
+  // Mesmo motivo do filtro de portal e do de vendedor: filtrar em memoria
+  // sobre os 50 mais recentes esconde o lead que nao couber nessa pagina.
+  it("o filtro de atendimento vai para o servidor", async () => {
+    const f = mockarComAtendimento([LEAD_COM_TELEFONE], []);
+    render(<Leads />);
+    await screen.findByText("Fulano");
+    f.mockClear();
+
+    await userEvent.selectOptions(screen.getByLabelText(/atendimento/i), "em_atendimento");
+
+    await waitFor(() => {
+      expect(f).toHaveBeenCalledWith("/api/leads?atendimento=em_atendimento");
+    });
+  });
+
+  it("lead sem telefone nao promete conferencia que nao existe", async () => {
+    const semTelefone = { id: 2, portal: "olx", nome: null, veiculo_texto: null, telefone_exibicao: null, status_ativacao: "pendente" };
+    mockarComAtendimento([semTelefone], [
+      { lead_id: 2, estado: "sem_telefone", ultima_mensagem_em: null, conferido_em: null, detalhe: null },
+    ]);
+    render(<Leads />);
+    await screen.findByText(/sem telefone/i);
+
+    expect(within(screen.getByRole("table")).queryByText(/em atendimento/i)).not.toBeInTheDocument();
   });
 });
